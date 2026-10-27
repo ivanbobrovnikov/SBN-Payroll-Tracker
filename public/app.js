@@ -65,6 +65,40 @@ function renderMain() {
 }
 
 // ---------------- Payroll ----------------
+// "Check before you pay": every location's notes in ONE bar at the top. Closed, it is a single line with the counts; open, each location lists its notes, and the long lists of
+// names, days and jobs sit behind a "Show details" of their own, so a big pile of notes never pushes the pay off the screen.
+const CHECK_ORDER = { corrections: 0, attendance: 1, unpaid: 2, unmarked: 3, missing: 4 };
+let checksOpen = false; const detailOpen = new Set();
+function renderChecks(d) {
+  const locs = d.locations.filter((l) => l.ok && l.state === "open" && l.warnings.length);
+  if (!locs.length) return null;
+  const total = locs.reduce((t, l) => t + l.warnings.length, 0), wrap = el("section", { class: "checks noprint", "data-part": "checks" });
+  function draw() {
+    wrap.innerHTML = "";
+    wrap.appendChild(el("button", { class: "checks-head", "data-act": "checks-toggle", "aria-expanded": String(checksOpen), onclick: () => { checksOpen = !checksOpen; draw(); } }, [
+      el("span", { class: "checks-ico", "aria-hidden": "true", text: "⚠" }), el("span", { class: "checks-title", text: `Check before you pay · ${total} note${total === 1 ? "" : "s"}` }),
+      el("span", { class: "checks-sum", "data-part": "checks-sum", text: locs.map((l) => `${l.locationName} ${l.warnings.length}`).join(" · ") }), el("span", { class: "checks-caret", "aria-hidden": "true", text: checksOpen ? "▴" : "▾" })]));
+    if (!checksOpen) return;
+    const body = el("div", { class: "checks-body", "data-part": "checks-body" });
+    locs.forEach((l) => {
+      const ws = l.warnings.slice().sort((a, b) => (CHECK_ORDER[a.code] ?? 9) - (CHECK_ORDER[b.code] ?? 9));
+      body.appendChild(el("div", { class: "check-loc", "data-name": l.locationName }, [
+        el("div", { class: "row", style: "margin:6px 0 4px" }, [el("h3", { class: "num", style: "margin:0;font-size:24px", text: `${l.locationName} · ${ws.length} note${ws.length === 1 ? "" : "s"}` }), l.url ? el("a", { class: "btn sm", href: l.url, target: "_blank", rel: "noopener noreferrer", "data-act": "open-shop", text: `Open ${l.locationName}` }) : null]),
+        ...ws.map((w) => {
+          const key = l.locationId + ":" + w.code, items = (w.items || []).map(String), open = detailOpen.has(key);
+          return el("div", { class: "check", "data-part": "check", "data-code": w.code }, [
+            el("div", { class: "check-text", text: w.text }),
+            w.code === "corrections" ? el("div", { class: "check-fix", "data-part": "check-fix", text: `To fix it: open ${l.locationName}, go to Payroll, pick Pay period and go back to that period. Press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` }) : null,
+            items.length ? el("button", { class: "check-more", "data-act": "details", "aria-expanded": String(open), onclick: () => { open ? detailOpen.delete(key) : detailOpen.add(key); draw(); }, text: open ? "Hide details" : `Show details (${items.length})` }) : null,
+            items.length && open ? el("ul", { class: "check-items", "data-part": "check-items" }, items.map((i) => el("li", { text: i }))) : null]);
+        })]));
+    });
+    wrap.appendChild(body);
+  }
+  draw();
+  return wrap;
+}
+
 async function renderPayroll(main) {
   const body = el("div", { style: "display:flex;flex-direction:column;gap:18px" }, [el("div", { class: "mut", text: "Asking every location…" })]);
   main.appendChild(body);
@@ -100,10 +134,8 @@ async function renderPayroll(main) {
     return el("span", { class: "chip " + (l.needsUpdate || !l.ok ? "a" : l.state === "run" ? "g" : ""), "data-part": "loc", text: `${l.locationName}: ${t}` });
   })));
   d.locations.filter((l) => l.needsUpdate || !l.ok).forEach((l) => body.appendChild(el("div", { class: "co w", "data-part": "problem", text: l.needsUpdate ? `${l.locationName} needs the latest tracker update before its pay can be shown here. The totals below do not include it.` : `Couldn't reach ${l.locationName} (${l.error || "no answer"}). The totals below do not include it.` })));
-  if (kind === "people") d.locations.filter((l) => l.ok && l.state === "open" && l.warnings.length).forEach((l) => body.appendChild(el("div", { class: "co w", "data-part": "warning" }, [
-    el("b", { text: `${l.locationName}: check before you pay` }),
-    el("ul", {}, l.warnings.map((w) => el("li", {}, [w.text, (w.items || []).length ? el("div", { class: "mut", "data-part": "warning-items", text: w.items.slice(0, 4).map(String).join(" · ") + (w.items.length > 4 ? ` · and ${w.items.length - 4} more` : "") }) : null]))),
-  ])));
+  const checks = kind === "people" ? renderChecks(d) : null;
+  if (checks) body.appendChild(checks);
   const list = kind === "people" ? d.people : d.reps;
   const search = el("input", { class: "in", placeholder: "Search a name", "aria-label": "Search a name", value: query, style: "max-width:280px", "data-field": "search" });
   search.addEventListener("input", () => { query = search.value; drawList(); });
