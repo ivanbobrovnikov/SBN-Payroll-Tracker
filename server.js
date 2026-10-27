@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-10-27-payroll-2";
+const BUILD = "2026-10-28-payroll-3";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -123,7 +123,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 async function askAll(db, pathAndQuery) {
   return Promise.all(db.locations.map(async (loc) => {
-    const base = { locationId: loc.id, locationName: loc.name };
+    const base = { locationId: loc.id, locationName: loc.name, locationUrl: loc.url };
     try {
       const r = await callLocation(loc, pathAndQuery);
       if (r.notOurApi) return { ...base, needsUpdate: true };
@@ -137,7 +137,7 @@ const personKey = (n) => String(n || "").normalize("NFD").replace(/[\u0300-\u036
 const cents = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const sum = (arr, f) => cents(arr.reduce((t, x) => t + (Number(x[f]) || 0), 0));
 const nice = (n) => String(n).replace(/\s+/g, " ").trim();
-const statusOf = (l) => ({ locationId: l.locationId, locationName: l.locationName, ok: !!l.data, needsUpdate: !!l.needsUpdate, error: l.error || null, state: l.data ? l.data.state || null : null, runClosedAt: l.data ? l.data.runClosedAt || null : null, warnings: l.data && Array.isArray(l.data.warnings) ? l.data.warnings : [] });
+const statusOf = (l) => ({ locationId: l.locationId, locationName: l.locationName, url: l.locationUrl || null, ok: !!l.data, needsUpdate: !!l.needsUpdate, error: l.error || null, state: l.data ? l.data.state || null : null, runClosedAt: l.data ? l.data.runClosedAt || null : null, warnings: l.data && Array.isArray(l.data.warnings) ? l.data.warnings : [] });
 
 // ---------- techs and managers: each location's own Payroll numbers, added up by name ----------
 async function peoplePay(periodId) {
