@@ -88,7 +88,9 @@ function renderChecks(d) {
           const key = l.locationId + ":" + w.code, items = (w.items || []).map(String), open = detailOpen.has(key);
           return el("div", { class: "check", "data-part": "check", "data-code": w.code }, [
             el("div", { class: "check-text", text: w.text }),
-            w.code === "corrections" ? el("div", { class: "check-fix", "data-part": "check-fix", text: `To fix it: open ${l.locationName}, go to Payroll, pick Pay period and go back to that period. Press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` }) : null,
+            w.code === "corrections" ? el("div", { class: "check-fix", "data-part": "check-fix" }, [
+              el("div", { text: l.url && w.periodStart ? `To fix it: tap the button. It opens ${day(w.periodStart)} \u2013 ${day(w.periodEnd)} in ${l.locationName}, where you press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` : `To fix it: open ${l.locationName}, go to Payroll, pick Pay period and go back to that period. Press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` }),
+              l.url && w.periodStart && w.periodEnd ? el("a", { class: "btn sm pri", style: "margin-top:8px", "data-act": "open-period", href: `${l.url}/#payroll=${w.periodStart}_${w.periodEnd}`, target: "_blank", rel: "noopener noreferrer", text: `Open ${day(w.periodStart)} \u2013 ${day(w.periodEnd)} in ${l.locationName} to re-run it` }) : null]) : null,
             items.length ? el("button", { class: "check-more", "data-act": "details", "aria-expanded": String(open), onclick: () => { open ? detailOpen.delete(key) : detailOpen.add(key); draw(); }, text: open ? "Hide details" : `Show details (${items.length})` }) : null,
             items.length && open ? el("ul", { class: "check-items", "data-part": "check-items" }, items.map((i) => el("li", { text: i }))) : null]);
         })]));
@@ -131,8 +133,11 @@ async function renderPayroll(main) {
   }
   body.appendChild(el("div", { class: "row", style: "gap:8px" }, d.locations.map((l) => {
     const t = l.needsUpdate ? "needs the latest update" : !l.ok ? "can't reach" : kind === "people" ? (l.state === "run" ? "payroll run " + day((l.runClosedAt || "").slice(0, 10)) : l.state === "skipped" ? "payroll skipped" : "payroll not run yet") : "connected";
-    return el("span", { class: "chip " + (l.needsUpdate || !l.ok ? "a" : l.state === "run" ? "g" : ""), "data-part": "loc", text: `${l.locationName}: ${t}` });
+    return el("span", { class: "chip " + (l.needsUpdate || !l.ok ? "a" : l.state === "run" ? "g" : ""), "data-part": "loc", title: l.build ? `${l.locationName} is running build ${l.build}` : "", text: `${l.locationName}: ${t}` });
   })));
+  d.locations.filter((l) => l.buildState === "old" || l.buildState === "behind").forEach((l) => body.appendChild(el("div", { class: "co w", "data-part": "version-note", "data-state": l.buildState }, [
+    el("b", { text: `${l.locationName} is ${l.buildState === "old" ? "on an old version" : "not on the newest version"} (build ${l.build})` }),
+    el("div", { class: "sub", text: l.buildState === "old" ? "It doesn't have Re-run payroll yet, so you can't re-run a period there. Upload the latest sbn-tracker-live.zip to that shop." : `It has Re-run payroll, but not the newest payroll fixes (the newest is ${d.latestShopBuild}). Upload the latest sbn-tracker-live.zip to that shop.` })])));
   d.locations.filter((l) => l.needsUpdate || !l.ok).forEach((l) => body.appendChild(el("div", { class: "co w", "data-part": "problem", text: l.needsUpdate ? `${l.locationName} needs the latest tracker update before its pay can be shown here. The totals below do not include it.` : `Couldn't reach ${l.locationName} (${l.error || "no answer"}). The totals below do not include it.` })));
   const checks = kind === "people" ? renderChecks(d) : null;
   if (checks) body.appendChild(checks);
