@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-10-28-payroll-3";
+const BUILD = "2026-10-29-payroll-6";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -121,9 +121,24 @@ async function callLocation(loc, pathAndQuery) {
   let data = null; try { data = await r.json(); } catch (e) { /* not json */ }
   return { status: r.status, ok: r.ok, data, notOurApi: data === null && (r.status === 404 || r.ok) };
 }
+// Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
+// which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash"];
+const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
+function buildState(build) {
+  if (!build) return "unknown";
+  const i = SHOP_BUILDS.indexOf(build), r = SHOP_BUILDS.indexOf(RERUN_FROM);
+  if (i >= 0) return i === SHOP_BUILDS.length - 1 ? "latest" : i >= r ? "behind" : "old";
+  const d = String(build).slice(0, 10);                       // a label not in the list: judge by its date
+  return d >= LATEST_SHOP.slice(0, 10) ? "latest" : d >= RERUN_FROM.slice(0, 10) ? "behind" : "old";
+}
+async function getBuild(loc) {
+  try { const r = await fetch(loc.url + "/api/version", { signal: AbortSignal.timeout(6000) }); const d = await r.json(); return typeof d.build === "string" ? d.build : null; } catch (e) { return null; }
+}
 async function askAll(db, pathAndQuery) {
   return Promise.all(db.locations.map(async (loc) => {
     const base = { locationId: loc.id, locationName: loc.name, locationUrl: loc.url };
+    const build = await getBuild(loc); base.locationBuild = build;
     try {
       const r = await callLocation(loc, pathAndQuery);
       if (r.notOurApi) return { ...base, needsUpdate: true };
@@ -137,7 +152,7 @@ const personKey = (n) => String(n || "").normalize("NFD").replace(/[\u0300-\u036
 const cents = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const sum = (arr, f) => cents(arr.reduce((t, x) => t + (Number(x[f]) || 0), 0));
 const nice = (n) => String(n).replace(/\s+/g, " ").trim();
-const statusOf = (l) => ({ locationId: l.locationId, locationName: l.locationName, url: l.locationUrl || null, ok: !!l.data, needsUpdate: !!l.needsUpdate, error: l.error || null, state: l.data ? l.data.state || null : null, runClosedAt: l.data ? l.data.runClosedAt || null : null, warnings: l.data && Array.isArray(l.data.warnings) ? l.data.warnings : [] });
+const statusOf = (l) => ({ locationId: l.locationId, locationName: l.locationName, url: l.locationUrl || null, build: l.locationBuild || null, buildState: buildState(l.locationBuild), ok: !!l.data, needsUpdate: !!l.needsUpdate, error: l.error || null, state: l.data ? l.data.state || null : null, runClosedAt: l.data ? l.data.runClosedAt || null : null, warnings: l.data && Array.isArray(l.data.warnings) ? l.data.warnings : [] });
 
 // ---------- techs and managers: each location's own Payroll numbers, added up by name ----------
 async function peoplePay(periodId) {
@@ -155,7 +170,7 @@ async function peoplePay(periodId) {
   const roleOrder = { manager: 0, tech: 1 };
   const byLocation = locs.map((l) => { const list = l.data ? (l.data.people || []).slice().sort((a, b) => (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || a.name.localeCompare(b.name)).map((p) => ({ ...p, name: nice(p.name) })) : [];
     return { ...statusOf(l), people: list, totals: { base: sum(list, "base"), upsellCommission: sum(list, "upsellCommission"), walkInCommission: sum(list, "walkInCommission"), tips: sum(list, "tips"), adjustments: sum(list, "adjustments"), total: sum(list, "total") } }; });
-  return { byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0)) };
+  return { latestShopBuild: LATEST_SHOP, byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0)) };
 }
 app.get("/api/pay/people", requireOwner, async (req, res) => res.json(await peoplePay(String(req.query.periodId || ""))));
 
@@ -180,7 +195,7 @@ async function salesRepPay(endParam) {
   reps.sort((a, b) => b.combined.commission - a.combined.commission || a.name.localeCompare(b.name));
   const byLocation = locs.map((l) => { const list = l.data ? (l.data.reps || []).slice().sort((a, b) => b.commission - a.commission || a.name.localeCompare(b.name)).map((r) => ({ ...r, name: nice(r.name) })) : [];
     return { ...statusOf(l), reps: list, totals: { totalBooked: sum(list, "totalBooked"), showedCount: sum(list, "showedCount"), noShowCount: sum(list, "noShowCount"), showedValue: sum(list, "showedValue"), commission: sum(list, "commission") } }; });
-  return { byLocation, period, periods, containingIndex, locations: locs.map(statusOf), reps, grandTotal: cents(reps.reduce((t, r) => t + r.combined.commission, 0)) };
+  return { latestShopBuild: LATEST_SHOP, byLocation, period, periods, containingIndex, locations: locs.map(statusOf), reps, grandTotal: cents(reps.reduce((t, r) => t + r.combined.commission, 0)) };
 }
 app.get("/api/pay/salesreps", requireOwner, async (req, res) => res.json(await salesRepPay(String(req.query.end || ""))));
 
@@ -243,7 +258,8 @@ app.post("/api/locations/:id/test", requireOwner, async (req, res) => {
     if (r.status === 401) return res.json({ ok: false, message: "It refused the secret. Check the secret you entered." });
     if (!r.ok) return res.json({ ok: false, message: (r.data && r.data.error) || `It answered with an error (${r.status}).` });
     const sr = await callLocation(loc, `/api/cross-location/salesrep-pay?start=2026-01-01&end=2026-01-02`);
-    res.json({ ok: !sr.notOurApi && sr.ok, message: sr.notOurApi ? "Reached it, but it needs the latest tracker update for sales rep pay." : "Connected." });
+    const bld = await getBuild(loc), st = buildState(bld);
+    res.json({ ok: !sr.notOurApi && sr.ok, build: bld, buildState: st, message: sr.notOurApi ? "Reached it, but it needs the latest tracker update for sales rep pay." : "Connected." + (bld ? ` Running build ${bld}${st === "latest" ? " (the newest)." : st === "behind" ? ", which is behind the newest. Upload the latest shop zip to get the newest payroll fixes." : ", which is old: it has no Re-run payroll yet. Upload the latest shop zip."}` : "") });
   } catch (e) { res.json({ ok: false, message: e.name === "TimeoutError" ? "No answer after 12 seconds." : "Couldn't reach it: " + (e.message || "unknown error") }); }
 });
 
