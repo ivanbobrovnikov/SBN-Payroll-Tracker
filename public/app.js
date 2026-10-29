@@ -53,7 +53,7 @@ function renderAuth(needsSetup) {
   pw.focus();
 }
 function renderMain() {
-  const nav = [["payroll", "Payroll"], ["locations", "Locations"], ["account", "Account"]];
+  const nav = [["payroll", "Payroll"], ["redos", "Redos"], ["locations", "Locations"], ["account", "Account"]];
   app.appendChild(el("header", { class: "top noprint" }, [
     el("div", { class: "brand" }, [el("div", { class: "plate" }, [el("img", { src: "/logo.png", alt: "SBN Auto Styling" })]), el("span", { class: "num", text: "SBN Payroll" })]),
     el("nav", { class: "nav", "aria-label": "Main" }, nav.map(([k, l]) => el("button", { class: "tab" + (tab === k ? " on" : ""), "aria-current": tab === k ? "page" : "false", onclick: () => { tab = k; boot(); }, text: l }))),
@@ -61,7 +61,7 @@ function renderMain() {
     el("button", { class: "btn sm", onclick: async () => { await fetch("/api/logout", { method: "POST" }); boot(); }, text: "Log out" }),
   ]));
   const main = el("main", {}); app.appendChild(main);
-  if (tab === "payroll") renderPayroll(main); else if (tab === "locations") renderLocations(main); else renderAccount(main);
+  if (tab === "payroll") renderPayroll(main); else if (tab === "redos") renderRedosAll(main); else if (tab === "locations") renderLocations(main); else renderAccount(main);
 }
 
 // ---------------- Payroll ----------------
@@ -99,6 +99,35 @@ function renderChecks(d) {
   }
   draw();
   return wrap;
+}
+
+// ---------- Redos: who gets the most, every location together ----------
+let redoRange = "90"; const redoOpen = new Set();
+async function renderRedosAll(main) {
+  const body = el("div", { style: "display:flex;flex-direction:column;gap:16px" }, [el("div", { class: "mut", text: "Asking every location?" })]);
+  main.appendChild(el("div", {}, [el("h1", { class: "num t1", text: "Redos" }), el("div", { class: "sub", text: "Who gets the most redos, every location together. A redo counts against the techs who worked the original car." })]));
+  main.appendChild(body);
+  let d; try { d = await api("/api/pay/redos?range=" + redoRange); } catch (e) { body.innerHTML = ""; body.appendChild(el("div", { class: "card", text: e.message || "Couldn't load the redos." })); return; }
+  body.innerHTML = "";
+  const rate = (r) => (r == null ? "\u2014" : r + "%");
+  body.appendChild(el("div", { class: "seg", role: "tablist", "aria-label": "How far back" }, [["30", "Last 30 days"], ["90", "Last 90 days"], ["year", "This year"], ["all", "All time"]].map(([k, l]) => el("button", { class: redoRange === k ? "on" : "", role: "tab", "data-range": k, "aria-selected": String(redoRange === k), onclick: () => { redoRange = k; boot(); }, text: l }))));
+  d.byShop.filter((s) => !s.ok).forEach((s) => body.appendChild(el("div", { class: "co w", "data-part": "redo-problem" }, [el("b", { text: `${s.locationName} ${s.needsUpdate ? "can't report redos yet (it needs the latest shop update)" : "couldn't be reached"}` })])));
+  body.appendChild(el("div", { class: "tiles", "data-part": "redo-tiles", style: "display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px" }, [["Redos", d.totals.redos, d.totals.redos ? "var(--red,#ff8a7a)" : ""], ["Cars worked", d.totals.cars, ""], ["Redo rate", rate(d.totals.rate), ""], ["Not the tech's fault", d.totals.notTechFault, ""]].map(([l, v, c]) => el("div", { class: "card", style: "padding:14px 16px" }, [el("div", { class: "mut", style: "font-size:13px", text: l }), el("div", { class: "num", style: "font-size:34px;" + (c ? "color:" + c : ""), text: String(v) })]))));
+  if (d.byShop.some((s) => s.ok)) body.appendChild(el("div", { class: "card", "data-part": "redo-shops", style: "padding:14px 16px" }, [el("div", { style: "font-weight:600;margin-bottom:6px", text: "By location" }), ...d.byShop.filter((s) => s.ok).map((s) => el("div", { class: "row", style: "justify-content:space-between;padding:4px 0" }, [el("span", { text: s.locationName }), el("span", { class: "mut", text: `${s.redos} redo${s.redos === 1 ? "" : "s"} \u00B7 ${s.cars} cars \u00B7 ${rate(s.rate)}` })]))]));
+  const list = el("div", { style: "display:flex;flex-direction:column;gap:10px", "data-part": "redo-people" });
+  body.appendChild(el("h2", { class: "num", style: "margin:4px 0 0;font-size:26px", text: "Who gets the most" }));
+  body.appendChild(list);
+  if (!d.people.length) list.appendChild(el("div", { class: "mut", text: "No cars or redos in this period yet." }));
+  d.people.forEach((p, i) => {
+    const open = redoOpen.has(p.key), mine = d.events.filter((e) => (e.people || []).some((x) => personKey(x.name) === p.key));
+    list.appendChild(el("article", { class: "card", "data-part": "redo-person", "data-name": p.name }, [
+      el("button", { class: "person", "aria-expanded": String(open), onclick: () => { open ? redoOpen.delete(p.key) : redoOpen.add(p.key); boot(); } }, [
+        el("div", { class: "av", text: initials(p.name) }),
+        el("div", { style: "flex:1;min-width:0" }, [el("div", { class: "num nm", text: `${p.redos > 0 ? "#" + (i + 1) + "  " : ""}${p.name}` }), el("div", { class: "where", text: `${p.cars} car${p.cars === 1 ? "" : "s"} worked \u00B7 ${rate(p.rate)} redo rate \u00B7 ${p.shops.map((s) => `${s.locationName} ${s.redos}`).join(" \u00B7 ")}` })]),
+        el("span", { class: "num chr", "data-part": "redo-count", style: "font-size:36px;" + (p.redos ? "color:var(--red,#ff8a7a)" : ""), text: String(p.redos) }), el("span", { style: "color:var(--mut)", text: open ? "\u25B4" : "\u25BE" })]),
+      open ? el("div", { style: "padding:8px 18px 14px" }, mine.length ? mine.map((e) => el("div", { style: "padding:6px 0;border-top:1px solid var(--ln)", "data-part": "redo-event" }, [el("div", { text: `${e.car}${e.customerName ? " \u00B7 " + e.customerName : ""}` }), el("div", { class: "mut", style: "font-size:13px", text: `${e.locationName} \u00B7 came back ${e.date} \u00B7 ${e.reason}${e.notFault ? " \u00B7 not the tech's fault" : ""}${e.note ? " \u00B7 " + e.note : ""}` })])) : [el("div", { class: "mut", text: "No redos in this period." })]) : null]));
+  });
+  if (d.reasons.length) { const max = Math.max(1, ...d.reasons.map((r) => r.count)); body.appendChild(el("h2", { class: "num", style: "margin:8px 0 0;font-size:26px", text: "Why they happen" })); body.appendChild(el("div", { class: "card", "data-part": "redo-reasons", style: "padding:14px 16px" }, d.reasons.map((r) => el("div", { style: "padding:6px 0" }, [el("div", { class: "row", style: "justify-content:space-between" }, [el("span", { text: r.reason }), el("span", { class: "num", text: String(r.count) })]), el("div", { style: "height:4px;background:var(--ln);border-radius:2px;margin-top:4px" }, [el("div", { style: `height:100%;border-radius:2px;background:var(--acc,#5b93ff);width:${Math.max(3, (r.count / max) * 100)}%` })])])))); }
 }
 
 async function renderPayroll(main) {
