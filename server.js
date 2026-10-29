@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-10-29-payroll-9";
+const BUILD = "2026-10-30-payroll-11";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -125,7 +125,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 // Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
 // which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
-const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto"];
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va"];
 const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
 function buildState(build) {
   if (!build) return "unknown";
@@ -175,6 +175,34 @@ async function peoplePay(periodId) {
   return { latestShopBuild: LATEST_SHOP, byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0)) };
 }
 app.get("/api/pay/people", requireOwner, async (req, res) => res.json(await peoplePay(String(req.query.periodId || ""))));
+
+// ---------- redos: who gets the most, every shop together ----------
+// Each shop reports its own redo counts (a redo counts against the techs who worked the original car); people are matched by name across shops, like pay is.
+async function redoTotals(rangeParam) {
+  const db = loadDB(), today = etToday(), range = ["30", "90", "year", "all"].includes(String(rangeParam)) ? String(rangeParam) : "90";
+  const start = range === "all" ? "2020-01-01" : range === "year" ? today.slice(0, 4) + "-01-01" : addDays(today, -Number(range));
+  const locs = await askAll(db, `/api/cross-location/redos?period=custom&startDate=${start}&endDate=${today}`);
+  const by = new Map(), reasons = {}, events = [];
+  locs.filter((l) => l.data).forEach((l) => {
+    (l.data.people || []).forEach((p) => {
+      const k = personKey(p.name); if (!k) return;
+      if (!by.has(k)) by.set(k, { key: k, name: nice(p.name), redos: 0, cars: 0, reasons: {}, shops: [] });
+      const r = by.get(k); if (nice(p.name).length > r.name.length) r.name = nice(p.name);
+      r.redos += p.redos; r.cars += p.cars; Object.entries(p.reasons || {}).forEach(([reason, n]) => { r.reasons[reason] = (r.reasons[reason] || 0) + n; });
+      r.shops.push({ locationId: l.locationId, locationName: l.locationName, redos: p.redos, cars: p.cars, rate: p.cars ? Math.round((p.redos / p.cars) * 1000) / 10 : null });
+    });
+    (l.data.reasons || []).forEach((x) => { reasons[x.reason] = (reasons[x.reason] || 0) + x.count; });
+    (l.data.events || []).forEach((e) => events.push({ ...e, locationName: l.locationName }));
+  });
+  const people = [...by.values()].map((p) => ({ ...p, rate: p.cars ? Math.round((p.redos / p.cars) * 1000) / 10 : null, shops: p.shops.sort((a, b) => b.redos - a.redos) })).sort((a, b) => b.redos - a.redos || (b.rate || 0) - (a.rate || 0) || a.name.localeCompare(b.name));
+  const ok = locs.filter((l) => l.data), tot = (f) => ok.reduce((t, l) => t + ((l.data.totals || {})[f] || 0), 0), redos = tot("redos"), cars = tot("cars");
+  events.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return { range, start, end: today, people, events: events.slice(0, 200), totals: { redos, cars, notTechFault: tot("notTechFault"), rate: cars ? Math.round((redos / cars) * 1000) / 10 : null },
+    reasons: Object.entries(reasons).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+    byShop: locs.map((l) => ({ locationId: l.locationId, locationName: l.locationName, ok: !!l.data, needsUpdate: !!l.needsUpdate, redos: l.data ? (l.data.totals || {}).redos : null, cars: l.data ? (l.data.totals || {}).cars : null, rate: l.data ? (l.data.totals || {}).rate : null })),
+    locations: locs.map(statusOf) };
+}
+app.get("/api/pay/redos", requireOwner, async (req, res) => res.json(await redoTotals(req.query.range)));
 
 // ---------- sales reps: their own two-week Thursday-to-Wednesday pay period ----------
 const SALES_ANCHOR_END = "2026-08-26";                                                         // a Wednesday that ends one of their pay periods
