@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-10-29-payroll-6";
+const BUILD = "2026-10-29-payroll-9";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -95,6 +95,8 @@ app.post("/api/locations", requireOwner, (req, res) => {
   if (nameTaken(db, name)) return res.status(400).json({ error: "A location with that name already exists." });
   let u; try { u = new URL(String(url).trim()); } catch (e) { return res.status(400).json({ error: "That address isn't a web address." }); }
   if (!/^https?:$/.test(u.protocol)) return res.status(400).json({ error: "The address must start with https://" });
+  const twin = db.locations.find((l) => String(l.url).toLowerCase() === u.origin.toLowerCase());
+  if (twin) return res.status(400).json({ error: `That tracker is already added as "${twin.name}". Adding it twice would count its pay twice.` });
   db.locations.push({ id: newId(), name: String(name).trim(), url: u.origin, secret: String(secret).trim() }); saveDB(db); res.json({ ok: true });
 });
 // The order of the list is the order locations appear on the Payroll screen (Jersey, Philly, Sunrise, and any you add later go to the end).
@@ -123,7 +125,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 // Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
 // which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
-const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash"];
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto"];
 const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
 function buildState(build) {
   if (!build) return "unknown";
