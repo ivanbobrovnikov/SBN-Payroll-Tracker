@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-10-30-payroll-12";
+const BUILD = "2026-10-30-payroll-14";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -125,7 +125,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 // Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
 // which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
-const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2"];
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2", "2026-10-30-closers"];
 const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
 function buildState(build) {
   if (!build) return "unknown";
@@ -168,13 +168,38 @@ async function peoplePay(periodId) {
     rec.locations.push({ locationId: l.locationId, locationName: l.locationName, state: l.data.state, ...p });
   }));
   const people = [...by.values()].map((p) => ({ ...p, locationCount: p.locations.length, combined: { base: sum(p.locations, "base"), upsellCommission: sum(p.locations, "upsellCommission"), walkInCommission: sum(p.locations, "walkInCommission"), tips: sum(p.locations, "tips"), subtotal: sum(p.locations, "subtotal"), adjustments: sum(p.locations, "adjustments"), total: sum(p.locations, "total") } }));
+  // Bonuses are typed in here (not in the shops): they belong to a person and a pay period, and become part of that person's one combined check.
+  const period0 = first ? first.period : null, bonusRows = period0 ? (db.bonuses || []).filter((b) => b.periodId === period0.id).map((b) => ({ id: b.id, personKey: b.personKey, personName: b.personName, amount: b.amount, reason: b.reason, note: b.note || "", matched: false })) : [];
+  people.forEach((p) => { const mine = bonusRows.filter((b) => b.personKey === p.key); mine.forEach((b) => { b.matched = true; }); p.bonuses = mine; p.bonus = cents(mine.reduce((t, b) => t + b.amount, 0)); p.combined.bonus = p.bonus; p.combined.total = cents(p.combined.total + p.bonus); });
+  const bonusTotal = cents(bonusRows.reduce((t, b) => t + b.amount, 0)), unmatchedTotal = cents(bonusRows.filter((b) => !b.matched).reduce((t, b) => t + b.amount, 0));
   people.sort((a, b) => b.locationCount - a.locationCount || b.combined.total - a.combined.total || a.name.localeCompare(b.name));
   const roleOrder = { manager: 0, tech: 1 };
   const byLocation = locs.map((l) => { const list = l.data ? (l.data.people || []).slice().sort((a, b) => (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || a.name.localeCompare(b.name)).map((p) => ({ ...p, name: nice(p.name) })) : [];
     return { ...statusOf(l), people: list, totals: { base: sum(list, "base"), upsellCommission: sum(list, "upsellCommission"), walkInCommission: sum(list, "walkInCommission"), tips: sum(list, "tips"), adjustments: sum(list, "adjustments"), total: sum(list, "total") } }; });
-  return { latestShopBuild: LATEST_SHOP, byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0)) };
+  return { latestShopBuild: LATEST_SHOP, byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0) + unmatchedTotal), bonuses: bonusRows, bonusTotal, bonusReasons: BONUS_REASONS };
 }
 app.get("/api/pay/people", requireOwner, async (req, res) => res.json(await peoplePay(String(req.query.periodId || ""))));
+
+const BONUS_REASONS = ["Hit a goal", "Top performer", "Holiday", "Other"];
+// Add or take away a bonus. It is the owner's own list in this tracker; nothing is sent to the shops.
+app.post("/api/pay/bonus", requireOwner, async (req, res) => {
+  const b = req.body || {}, amount = Math.round(Number(b.amount) * 100) / 100, note = String(b.note || "").trim();
+  if (!isFinite(amount) || amount <= 0 || amount > 100000) return res.status(400).json({ error: "Enter a bonus amount above zero." });
+  if (!BONUS_REASONS.includes(b.reason)) return res.status(400).json({ error: "Pick a reason." });
+  if (note.length > 200) return res.status(400).json({ error: "Keep the note under 200 characters." });
+  if (b.reason === "Other" && !note) return res.status(400).json({ error: "Add a short note saying what the bonus is for." });
+  const wanted = String(b.periodId || ""), d = await peoplePay(wanted);
+  if (!d.period || (wanted && d.period.id !== wanted)) return res.status(400).json({ error: "Couldn't find that pay period. Check the Locations tab." });
+  const person = d.people.find((p) => p.key === b.personKey); if (!person) return res.status(400).json({ error: "Pick someone from the list." });
+  const db = loadDB(); db.bonuses = db.bonuses || [];
+  const rec = { id: newId(), personKey: person.key, personName: person.name, periodId: d.period.id, periodStart: d.period.start, periodEnd: d.period.end, amount, reason: b.reason, note, createdAt: new Date().toISOString() };
+  db.bonuses.push(rec); saveDB(db); res.json({ ok: true, id: rec.id });
+});
+app.delete("/api/pay/bonus/:id", requireOwner, (req, res) => {
+  const db = loadDB(), before = (db.bonuses || []).length; db.bonuses = (db.bonuses || []).filter((x) => x.id !== req.params.id);
+  if (db.bonuses.length === before) return res.status(404).json({ error: "That bonus isn't there any more." });
+  saveDB(db); res.json({ ok: true });
+});
 
 // ---------- redos: who gets the most, every shop together ----------
 // Each shop reports its own redo counts (a redo counts against the techs who worked the original car); people are matched by name across shops, like pay is.
@@ -239,19 +264,24 @@ app.get("/api/pay/export.csv", requireOwner, async (req, res) => {
     const d = await peoplePay(String(req.query.periodId || ""));
     const tag = d.period ? `${d.period.start}_${d.period.end}` : "";
     if (byLoc) {
-      rows = [["Location", "Person", "Role", "Pay type", "Base pay", "Upsell commission", "Walk-in commission", "Tips", "Adjustments", "Total"]];
+      rows = [["Location", "Person", "Role", "Pay type", "Base pay", "Upsell commission", "Walk-in commission", "Tips", "Adjustments", "Bonus", "Total"]];
       d.byLocation.forEach((l) => {
         if (!l.ok) { rows.push([l.locationName, l.needsUpdate ? "(not included: needs the latest tracker update)" : "(not included: couldn't reach it)"]); return; }
-        l.people.forEach((p) => rows.push([l.locationName, p.name, p.role, p.payType || "commission", p.base, p.upsellCommission, p.walkInCommission, p.tips, p.adjustments, p.total]));
-        rows.push([l.locationName, "SUBTOTAL", "", "", l.totals.base, l.totals.upsellCommission, l.totals.walkInCommission, l.totals.tips, l.totals.adjustments, l.totals.total]);
+        l.people.forEach((p) => rows.push([l.locationName, p.name, p.role, p.payType || "commission", p.base, p.upsellCommission, p.walkInCommission, p.tips, p.adjustments, "", p.total]));
+        rows.push([l.locationName, "SUBTOTAL", "", "", l.totals.base, l.totals.upsellCommission, l.totals.walkInCommission, l.totals.tips, l.totals.adjustments, "", l.totals.total]);
       });
       const ok = d.byLocation.filter((l) => l.ok), all = (f) => cents(ok.reduce((t, l) => t + l.totals[f], 0));
-      rows.push(["ALL LOCATIONS", "TOTAL", "", "", all("base"), all("upsellCommission"), all("walkInCommission"), all("tips"), all("adjustments"), all("total")]);
+      (d.bonuses || []).forEach((b) => rows.push(["BONUS", `${b.personName} (${b.reason}${b.note ? ": " + b.note : ""})`, "", "", "", "", "", "", "", b.amount, b.amount]));
+      rows.push(["ALL LOCATIONS", "TOTAL", "", "", all("base"), all("upsellCommission"), all("walkInCommission"), all("tips"), all("adjustments"), d.bonusTotal || "", cents(all("total") + (d.bonusTotal || 0))]);
       name = `payroll-by-location-techs-managers-${tag}`;
     } else {
-      rows = [["Person", "Location", "Role", "Pay type", "Base pay", "Upsell commission", "Walk-in commission", "Tips", "Adjustments", "Total"]];
-      d.people.forEach((p) => { p.locations.forEach((l) => rows.push([p.name, l.locationName, l.role, l.payType || "commission", l.base, l.upsellCommission, l.walkInCommission, l.tips, l.adjustments, l.total]));
-        if (p.locationCount > 1) rows.push([p.name, "All locations", "", "", p.combined.base, p.combined.upsellCommission, p.combined.walkInCommission, p.combined.tips, p.combined.adjustments, p.combined.total]); });
+      rows = [["Person", "Location", "Role", "Pay type", "Base pay", "Upsell commission", "Walk-in commission", "Tips", "Adjustments", "Bonus", "Total"]];
+      d.people.forEach((p) => {
+        p.locations.forEach((l) => rows.push([p.name, l.locationName, l.role, l.payType || "commission", l.base, l.upsellCommission, l.walkInCommission, l.tips, l.adjustments, "", l.total]));
+        (p.bonuses || []).forEach((b) => rows.push([p.name, `Bonus: ${b.reason}${b.note ? " (" + b.note + ")" : ""}`, "", "", "", "", "", "", "", b.amount, b.amount]));
+        if (p.locationCount > 1 || (p.bonuses || []).length) rows.push([p.name, "All locations", "", "", p.combined.base, p.combined.upsellCommission, p.combined.walkInCommission, p.combined.tips, p.combined.adjustments, p.combined.bonus || "", p.combined.total]);
+      });
+      (d.bonuses || []).filter((b) => !b.matched).forEach((b) => rows.push([b.personName, `Bonus: ${b.reason}${b.note ? " (" + b.note + ")" : ""} (not matched to anyone right now)`, "", "", "", "", "", "", "", b.amount, b.amount]));
       name = d.period ? `payroll-techs-managers-${tag}` : "payroll-techs-managers";
     }
   } else {
