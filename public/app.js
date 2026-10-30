@@ -23,6 +23,7 @@ async function api(path, opts) {
   return d;
 }
 const app = document.getElementById("app");
+let openBonus = false;
 let tab = "payroll", kind = "people", view = "location", periodId = null, repEnd = null, query = "", multiOnly = false, printAll = false, build = "";
 const openKeys = new Set();
 
@@ -179,12 +180,29 @@ async function renderPayroll(main) {
   const csvHref = (kind === "people" ? "/api/pay/export.csv?kind=people" + (periodId ? "&periodId=" + encodeURIComponent(periodId) : "") : "/api/pay/export.csv?kind=salesreps" + (repEnd ? "&end=" + repEnd : "")) + (view === "location" ? "&view=location" : "");
   body.appendChild(el("div", { class: "row noprint" }, [search, kind === "people" && view === "person" ? el("label", { style: "display:flex;align-items:center;gap:12px;min-height:44px" }, [multi, "Only people at 2+ locations"]) : null, el("div", { class: "sp" }), total,
     el("a", { class: "btn sm", href: csvHref, "data-act": "csv", download: "", text: "Export spreadsheet" }), el("button", { class: "btn sm", "data-act": "print", onclick: () => { printAll = true; drawList(); window.print(); printAll = false; drawList(); }, text: "Print" })]));
+  // Bonuses: typed in here, added to the person's one combined check for the pay period on screen
+  function bonusCard() {
+    const list = d.bonuses || [], card = el("section", { class: "card", "data-part": "bonuses", style: "padding:16px 18px" }), msg = el("div", { style: "font-size:13px;min-height:16px;margin-top:6px;color:var(--warn)", "data-part": "bonus-msg" });
+    const person = el("select", { class: "in", "data-field": "bonus-person", style: "width:100%;margin-bottom:8px" }, [el("option", { value: "", text: "Who gets the bonus?" }), ...(d.people || []).slice().sort((x, y) => x.name.localeCompare(y.name)).map((p) => el("option", { value: p.key, text: `${p.name} (${p.locations.map((l) => l.locationName).join(" + ")})` }))]);
+    const amount = el("input", { class: "in", type: "number", step: "0.01", min: "0", inputmode: "decimal", placeholder: "Amount, like 100", "data-field": "bonus-amount", style: "width:100%;margin-bottom:8px" });
+    const reason = el("select", { class: "in", "data-field": "bonus-reason", style: "width:100%;margin-bottom:8px" }, (d.bonusReasons || []).map((r) => el("option", { value: r, text: r })));
+    const note = el("input", { class: "in", type: "text", maxlength: "200", placeholder: "Note (what it's for)", "data-field": "bonus-note", style: "width:100%;margin-bottom:8px" });
+    const form = el("div", { style: "display:none;margin-top:12px", "data-part": "bonus-form" }, [person, amount, reason, note,
+      el("div", { class: "mut", style: "font-size:13px;margin-bottom:8px", text: `It goes on the ${d.period ? d.period.name + " (" + d.period.start + " to " + d.period.end + ")" : "pay period on screen"} check, added to everything else they're paid.` }),
+      el("button", { class: "btn pri", "data-act": "bonus-save", text: "Add bonus", onclick: async () => { msg.textContent = ""; try { await api("/api/pay/bonus", { method: "POST", body: JSON.stringify({ personKey: person.value, periodId: d.period && d.period.id, amount: amount.value, reason: reason.value, note: note.value }) }); openBonus = true; await boot(); } catch (e) { msg.textContent = e.message || "Couldn't add that."; } } })]);
+    if (openBonus) form.style.display = "block";
+    card.appendChild(el("div", { class: "row", style: "align-items:baseline;gap:12px" }, [el("h2", { class: "num", style: "margin:0;font-size:26px", text: "Bonuses" }), el("span", { class: "mut", "data-part": "bonus-sum", text: list.length ? `${list.length} this period \u00B7 ${money(d.bonusTotal)}` : "none this period" }), el("div", { class: "sp" }), el("button", { class: "btn sm pri noprint", "data-act": "bonus-toggle", text: "+ Add a bonus", onclick: () => { openBonus = form.style.display === "none"; form.style.display = openBonus ? "block" : "none"; } })]));
+    list.forEach((b) => card.appendChild(el("div", { class: "row", "data-part": "bonus-row", style: "padding:9px 0;border-top:1px solid var(--ln);gap:10px;align-items:center" }, [el("div", { style: "flex:1;min-width:0" }, [el("div", { text: b.personName }), el("div", { class: "mut", style: "font-size:13px", text: `${b.reason}${b.note ? " \u00B7 " + b.note : ""}${b.matched ? "" : " \u00B7 not matched to anyone right now"}` })]), el("b", { class: "num chr", text: money(b.amount) }), el("button", { class: "btn sm noprint", "data-act": "bonus-remove", text: "Remove", onclick: async () => { if (!confirm(`Remove ${money(b.amount)} bonus for ${b.personName}?`)) return; try { await api("/api/pay/bonus/" + b.id, { method: "DELETE" }); openBonus = false; await boot(); } catch (e) { msg.textContent = e.message || "Couldn't remove that."; } } })])));
+    card.appendChild(form); card.appendChild(msg); return card;
+  }
+  if (kind === "people") body.appendChild(bonusCard());
   const listEl = el("div", { style: "display:flex;flex-direction:column;gap:12px", "data-part": "list" }); body.appendChild(listEl);
   const line = (l, v, cls) => el("div", { class: "ln" }, [l, el("b", { style: cls || "", text: v })]);
   function peopleBoxes(p) {
     const box = (t, x, all) => el("div", { class: "box" + (all ? " all" : "") }, [el("h4", { text: t }), line("Base pay", money(x.base)), line("Upsell commission", money(x.upsellCommission)), line("Walk-in commission", money(x.walkInCommission)), line("Tips", money(x.tips)), x.adjustments ? line(x.state === "open" || all ? "Adjustments" : "Adjustments", (x.adjustments > 0 ? "+" : "") + money(x.adjustments)) : null,
+      x.bonus ? line("Bonus", money(x.bonus), "color:#6BF0B4") : null,
       el("div", { class: "ln t" }, ["Total", el("b", { class: "chr", text: money(x.total) })]), x.changedSinceRun ? el("div", { style: "font-size:12px;color:var(--warn);margin-top:6px", text: "Jobs changed after payroll was run here, so this may no longer match what was paid. These are the amounts the run recorded." }) : null]);
-    return el("div", { class: "boxes" }, [...p.locations.map((l) => box(`${l.locationName} · ${l.role}${l.payType ? " · " + l.payType : ""}${l.payType && l.daysPresent ? ` · ${l.daysPresent} day${l.daysPresent !== 1 ? "s" : ""} marked present` : ""}`, l)), p.locationCount > 1 ? box("Combined, all locations", p.combined, true) : null]);
+    return el("div", { class: "boxes" }, [...p.locations.map((l) => box(`${l.locationName} · ${l.role}${l.payType ? " · " + l.payType : ""}${l.payType && l.daysPresent ? ` · ${l.daysPresent} day${l.daysPresent !== 1 ? "s" : ""} marked present` : ""}`, l)), (p.locationCount > 1 || p.bonus) ? box("Combined, all locations", p.combined, true) : null]);
   }
   function repBoxes(r) {
     const box = (t, x, all) => el("div", { class: "box" + (all ? " all" : "") }, [el("h4", { text: t }), line("Booked", String(x.totalBooked)), line("Showed", String(x.showedCount), "color:#6BF0B4"), line("No-shows", String(x.noShowCount), x.noShowCount ? "color:#FFA99D" : ""), line("Showed value", money(x.showedValue)),
@@ -200,7 +218,7 @@ async function renderPayroll(main) {
     const rowsOf = (l) => (isP ? l.people : l.reps).filter((p) => !q || p.name.toLowerCase().includes(q));
     const amtOf = (x) => (isP ? x.total : x.commission);
     const okLocs = locs.filter((l) => l.ok);
-    const grand = Math.round(okLocs.reduce((t, l) => t + (isP ? l.totals.total : l.totals.commission), 0) * 100) / 100;
+    const grand = Math.round((okLocs.reduce((t, l) => t + (isP ? l.totals.total : l.totals.commission), 0) + (isP ? d.bonusTotal || 0 : 0)) * 100) / 100;
     const headcount = okLocs.reduce((t, l) => t + (isP ? l.people.length : l.reps.length), 0);
     total.textContent = `${headcount} ${isP ? (headcount === 1 ? "person" : "people") : (headcount === 1 ? "sales rep" : "sales reps")} across ${okLocs.length} location${okLocs.length === 1 ? "" : "s"} · ${money(grand)} in total`;
     if (!locs.length) { listEl.appendChild(el("div", { class: "co w", text: "No locations yet. Add each shop on the Locations tab." })); return; }
@@ -209,6 +227,7 @@ async function renderPayroll(main) {
         el("div", { class: "lbl", text: l.locationName }),
         el("div", { class: "num" + (l.ok ? " chr" : ""), style: "font-size:34px;margin-top:8px" + (l.ok ? "" : ";color:var(--warn)"), text: l.ok ? money(isP ? l.totals.total : l.totals.commission) : "not included" }),
         el("div", { class: "mut", style: "margin-top:4px", text: l.ok ? (() => { const n = (isP ? l.people : l.reps).length; return `${n} ${isP ? (n === 1 ? "person" : "people") : (n === 1 ? "sales rep" : "sales reps")}`; })() : (l.needsUpdate ? "needs the latest update" : "can't reach it") })])),
+      isP && d.bonusTotal ? el("div", { class: "card", style: "padding:16px 18px", "data-part": "loc-tile", "data-name": "Bonuses" }, [el("div", { class: "lbl", text: "Bonuses" }), el("div", { class: "num chr", style: "font-size:34px;margin-top:8px", text: money(d.bonusTotal) }), el("div", { class: "mut", style: "margin-top:4px", text: `${(d.bonuses || []).length} bonus${(d.bonuses || []).length === 1 ? "" : "es"}, not tied to one location` })]) : null,
       el("div", { class: "card", style: "padding:16px 18px;background:var(--card2)", "data-part": "loc-tile", "data-name": "All locations" }, [
         el("div", { class: "lbl", text: "All locations" }), el("div", { class: "num chr", style: "font-size:34px;margin-top:8px", text: money(grand) }), el("div", { class: "mut", style: "margin-top:4px", text: `${okLocs.length} of ${locs.length} included` })]),
     ]));
