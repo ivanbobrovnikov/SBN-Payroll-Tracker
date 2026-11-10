@@ -70,9 +70,27 @@ function renderMain() {
 // names, days and jobs sit behind a "Show details" of their own, so a big pile of notes never pushes the pay off the screen.
 const CHECK_ORDER = { corrections: 0, attendance: 1, unpaid: 2, unmarked: 3, missing: 4 };
 let checksOpen = false; const detailOpen = new Set();
+// Only the last pay period and the one in progress are shown. Older notices (an old payroll's corrections, the checks of an old period) are held back, so they are not in the way, but one quiet line keeps them a tap
+// away: an underpayment on an older check must never be lost for good.
+let olderOpen = false;
 function renderChecks(d) {
-  const locs = d.locations.filter((l) => l.ok && l.state === "open" && l.warnings.length);
-  if (!locs.length) return null;
+  const locs = d.locations.filter((l) => l.ok && l.state === "open" && l.warnings.length), hiddenLocs = d.locations.filter((l) => l.ok && l.state === "open" && (l.hiddenWarnings || []).length), hidden = hiddenLocs.reduce((t, l) => t + l.hiddenWarnings.length, 0);
+  if (!locs.length && !hidden) return null;
+  const outer = el("div", { class: "noprint", "data-part": "checks-outer" });
+  if (locs.length) outer.appendChild(checksPanel(d, locs));
+  if (hidden) {
+    const row = el("div", { class: "older", "data-part": "older" });
+    const drawOlder = () => {
+      row.innerHTML = "";
+      row.appendChild(el("button", { class: "check-more", "data-act": "older-toggle", "aria-expanded": String(olderOpen), onclick: () => { olderOpen = !olderOpen; drawOlder(); }, text: olderOpen ? "Hide older notices" : `${hidden} older notice${hidden === 1 ? "" : "s"} hidden (${d.viewingOld ? "this pay period is older than the last one" : "from before " + day(d.noticesFrom)}). Show` }));
+      if (olderOpen) hiddenLocs.forEach((l) => l.hiddenWarnings.forEach((w) => row.appendChild(el("div", { class: "check", "data-part": "older-check", "data-code": w.code }, [el("div", { class: "check-text", text: `${l.locationName}: ${w.text}` }),
+        l.url && w.periodStart && w.periodEnd ? el("a", { class: "btn sm", style: "margin-top:8px", "data-act": "open-period", href: `${l.url}/#payroll=${w.periodStart}_${w.periodEnd}`, target: "_blank", rel: "noopener noreferrer", text: `Open ${day(w.periodStart)} \u2013 ${day(w.periodEnd)}` }) : null]))));
+    };
+    drawOlder(); outer.appendChild(row);
+  }
+  return outer;
+}
+function checksPanel(d, locs) {
   const total = locs.reduce((t, l) => t + l.warnings.length, 0), wrap = el("section", { class: "checks noprint", "data-part": "checks" });
   function draw() {
     wrap.innerHTML = "";
@@ -100,6 +118,33 @@ function renderChecks(d) {
   }
   draw();
   return wrap;
+}
+
+// ---------- "Days worked" drop-down under each person ----------
+// What the shop recorded for each work day of the pay period: worked, half day, missed, or not marked (a day nobody marked pays $0), with the times when a different shift was entered, and for a manager on an extra car
+// commission the cars that earned it. A day that has not happened yet is "coming up", never "missed". It only reads: nothing here changes anything.
+const daysOpen = new Set();
+const syncDays = (isPeople, key, open) => { if (isPeople) open ? daysOpen.add(key) : daysOpen.delete(key); };
+const DAY_LOOK = { present: ["\u2713", "Worked", "#6BF0B4"], half: ["\u00BD", "Half day", "var(--warn)"], absent: ["\u2717", "Missed", "#FFA99D"], unmarked: ["\u2013", "Not marked", "var(--warn)"], upcoming: ["\u00B7", "Coming up", "var(--mut)"], today: ["\u00B7", "Today", "var(--mut)"] };
+const clock = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); if (!m) return ""; let h = +m[1]; const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return `${h}:${m[2]} ${ap}`; };
+const dayShort3 = (ymd) => new Date(ymd + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+function daysPanel(l, keyBase, redraw) {
+  const dt = l && l.detail; if (!dt || (!dt.days.length && !dt.sunday)) return null;                 // nothing recorded for someone paid per car: no empty drop-down
+  const c = dt.counts, key = "D:" + keyBase, open = daysOpen.has(key);
+  const bits = [`${c.present} worked`]; if (c.half) bits.push(`${c.half} half day${c.half === 1 ? "" : "s"}`); bits.push(`${c.absent} missed`); if (c.unmarked) bits.push(`${c.unmarked} not marked`); if (c.upcoming) bits.push(`${c.upcoming} coming up`);
+  const wrap = el("div", { class: "days noprint", "data-part": "days", "data-name": l.name }, [
+    el("button", { class: "days-toggle", "data-act": "days", "aria-expanded": String(open), onclick: (ev) => { ev.stopPropagation(); open ? daysOpen.delete(key) : daysOpen.add(key); redraw(); } }, [
+      el("span", { class: "days-lbl", text: "Days worked" }), el("span", { class: "days-sum", "data-part": "days-sum", text: bits.join(" \u00B7 ") + ` (of ${dt.workDays} day${dt.workDays === 1 ? "" : "s"})` }), el("span", { class: "days-caret", "aria-hidden": "true", text: open ? "\u25B4" : "\u25BE" })])]);
+  if (!open) return wrap;
+  const body = el("div", { class: "days-body", "data-part": "days-body" });
+  if (!dt.usesAttendance) body.appendChild(el("div", { class: "mut", style: "padding:4px 0 8px;font-size:13px", text: "Paid per car, so attendance doesn't change this person's pay." }));
+  dt.days.forEach((x) => { const [ico, word, col] = DAY_LOOK[x.status] || DAY_LOOK.unmarked, t = x.start || x.end ? `${clock(x.start) || "?"} \u2013 ${clock(x.end) || "?"}` : "";
+    body.appendChild(el("div", { class: "dayrow", "data-part": "dayrow", "data-status": x.status }, [el("span", { class: "dd", text: dayShort3(x.date) }), el("span", { class: "ds", style: `color:${col}` }, [el("b", { text: ico + " " }), word + (x.status === "unmarked" && dt.usesAttendance ? " (pays $0)" : "")]), el("span", { class: "dt mut", text: t })])); });
+  if (dt.sunday && dt.sunday.cars.length) {
+    body.appendChild(el("div", { class: "sunh", text: `Sunday cars \u00B7 ${dt.sunday.rate}% of each car's price \u00B7 ${money(dt.sunday.amount)} (in Base pay)` }));
+    dt.sunday.cars.forEach((cr) => body.appendChild(el("div", { class: "dayrow sun", "data-part": "sunday-car" }, [el("span", { class: "dd", text: dayShort3(String(cr.date).slice(0, 10)) }), el("span", { class: "ds", text: String(cr.car || "").slice(0, 46) }), el("span", { class: "dt", text: `${money(cr.basePrice)} \u2192 ${money(cr.commission)}` })])));
+  } else if (dt.sunday) body.appendChild(el("div", { class: "sunh", text: `Sunday cars \u00B7 ${dt.sunday.rate}% \u00B7 none counted this period` }));
+  wrap.appendChild(body); return wrap;
 }
 
 // ---------- Redos: who gets the most, every location together ----------
@@ -201,7 +246,8 @@ async function renderPayroll(main) {
   function peopleBoxes(p) {
     const box = (t, x, all) => el("div", { class: "box" + (all ? " all" : "") }, [el("h4", { text: t }), line("Base pay", money(x.base)), line("Upsell commission", money(x.upsellCommission)), line("Walk-in commission", money(x.walkInCommission)), line("Tips", money(x.tips)), x.adjustments ? line(x.state === "open" || all ? "Adjustments" : "Adjustments", (x.adjustments > 0 ? "+" : "") + money(x.adjustments)) : null,
       x.bonus ? line("Bonus", money(x.bonus), "color:#6BF0B4") : null,
-      el("div", { class: "ln t" }, ["Total", el("b", { class: "chr", text: money(x.total) })]), x.changedSinceRun ? el("div", { style: "font-size:12px;color:var(--warn);margin-top:6px", text: "Jobs changed after payroll was run here, so this may no longer match what was paid. These are the amounts the run recorded." }) : null]);
+      el("div", { class: "ln t" }, ["Total", el("b", { class: "chr", text: money(x.total) })]), x.changedSinceRun ? el("div", { style: "font-size:12px;color:var(--warn);margin-top:6px", text: "Jobs changed after payroll was run here, so this may no longer match what was paid. These are the amounts the run recorded." }) : null,
+      !all && kind === "people" ? daysPanel(x, p.key + ":" + x.locationId, drawList) : null]);
     return el("div", { class: "boxes" }, [...p.locations.map((l) => box(`${l.locationName} · ${l.role}${l.payType ? " · " + l.payType : ""}${l.payType && l.daysPresent ? ` · ${l.daysPresent} day${l.daysPresent !== 1 ? "s" : ""} marked present` : ""}`, l)), (p.locationCount > 1 || p.bonus) ? box("Combined, all locations", p.combined, true) : null]);
   }
   function repBoxes(r) {
@@ -247,11 +293,12 @@ async function renderPayroll(main) {
       shown.forEach((p) => {
         const k = "L:" + kind + ":" + l.locationId + ":" + personKey(p.name), open = printAll || openKeys.has(k);
         const sub = isP ? `${p.role}${p.payType ? " · " + p.payType : ""}` : `${p.commissionRate}% in-hours · ${p.afterHoursCommissionRate}% after-hours`;
-        sec.appendChild(el("div", { class: "lrow" + (open ? " open" : ""), role: "button", tabindex: "0", "aria-expanded": String(open), "data-part": "lrow", "data-name": p.name, onclick: () => { openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); drawList(); }, onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); drawList(); } } }, [
+        sec.appendChild(el("div", { class: "lrow" + (open ? " open" : ""), role: "button", tabindex: "0", "aria-expanded": String(open), "data-part": "lrow", "data-name": p.name, onclick: () => { openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); syncDays(isP, "D:" + l.locationId + ":" + personKey(p.name), openKeys.has(k)); drawList(); }, onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); syncDays(isP, "D:" + l.locationId + ":" + personKey(p.name), openKeys.has(k)); drawList(); } } }, [
           el("div", { class: "nm2" }, [el("div", { text: p.name }), el("div", { class: "mut", text: sub })]),
           ...(isP ? [det("Base pay", money(p.base)), det("Upsell commission", money(p.upsellCommission)), det("Walk-in commission", money(p.walkInCommission)), det("Tips", money(p.tips)), det("Adjustments", p.adjustments ? (p.adjustments > 0 ? "+" : "") + money(p.adjustments) : "$0.00")]
                   : [det("Booked", String(p.totalBooked)), det("Showed", String(p.showedCount), "color:#6BF0B4"), det("No-shows", String(p.noShowCount), p.noShowCount ? "color:#FFA99D" : ""), det("Showed value", money(p.showedValue)), det("In / after-hours sales", `${p.duringHoursCount} / ${p.afterHoursCount}`)]),
           el("b", { class: "num tot", "data-part": "row-total", text: money(amtOf(p)) })]));
+        if (isP) { const dp = daysPanel(p, l.locationId + ":" + personKey(p.name), drawList); if (dp) sec.appendChild(dp); }
       });
       sec.appendChild(el("div", { class: "lrow t" }, [el("span", { text: (q ? "Total shown, " : "Total, ") + l.locationName }),
         ...(isP ? [det("", money(tot.base)), det("", money(tot.up)), det("", money(tot.wi)), det("", money(tot.tips)), det("", (tot.adj > 0 ? "+" : "") + money(tot.adj))] : [det("", String(tot.booked)), det("", String(tot.showed)), det("", String(tot.ns)), det("", money(tot.val)), det("", "")]),
@@ -270,7 +317,7 @@ async function renderPayroll(main) {
       const open = printAll || openKeys.has(kind + ":" + p.key), amt = kind === "people" ? p.combined.total : p.combined.commission;
       const where = p.locations.map((l) => `${l.locationName} ${money(kind === "people" ? l.total : l.commission)}`).join(" · ");
       listEl.appendChild(el("article", { class: "card", "data-part": "person", "data-name": p.name }, [
-        el("button", { class: "person", "aria-expanded": String(open), onclick: () => { const k = kind + ":" + p.key; openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); drawList(); } }, [
+        el("button", { class: "person", "aria-expanded": String(open), onclick: () => { const k = kind + ":" + p.key; openKeys.has(k) ? openKeys.delete(k) : openKeys.add(k); if (kind === "people") p.locations.forEach((x) => syncDays(true, "D:" + p.key + ":" + x.locationId, openKeys.has(k))); drawList(); } }, [
           el("div", { class: "av", text: initials(p.name) }), el("div", { style: "flex:1;min-width:0" }, [el("div", { class: "num nm", text: p.name }), el("div", { class: "where", text: where })]),
           el("span", { class: "num chr", "data-part": "amount", style: "font-size:36px", text: money(amt) }), el("span", { class: "noprint", style: "color:var(--mut)", text: open ? "▴" : "▾" })]),
         open ? (kind === "people" ? peopleBoxes(p) : repBoxes(p)) : null]));

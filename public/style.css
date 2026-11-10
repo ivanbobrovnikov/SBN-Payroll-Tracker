@@ -90,3 +90,15 @@ h1.t1 { margin: 0; font-size: 38px; }
 .check-text { color: var(--tx); } .check-fix { color: var(--sub); font-size: 14px; margin-top: 5px; }
 .check-more { margin-top: 6px; background: none; border: 0; padding: 4px 0; min-height: 32px; color: #7FA8FF; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
 .check-items { margin: 4px 0 0; padding-left: 20px; color: var(--sub); font-size: 14px; } .check-items li { padding: 2px 0; }
+
+/* ---- Days worked drop-down, and the quiet line for older notices ---- */
+.days { margin: 2px 0 10px; border-bottom: 1px solid var(--ln2); }
+.days-toggle { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 4px 6px; cursor: pointer; font-size: 13px; color: var(--sub); }
+.days-toggle:hover { background: rgba(91,147,255,.06); } .days-toggle:focus-visible { outline: 2px solid var(--pri, #5B93FF); outline-offset: 1px; }
+.days-lbl { font-weight: 600; color: var(--txt, #fff); } .days-sum { flex: 1; min-width: 0; } .days-caret { color: var(--mut); }
+.days-body { padding: 2px 6px 10px; }
+.dayrow { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: baseline; padding: 5px 0; font-size: 13.5px; border-top: 1px solid var(--ln2); }
+.dayrow .dt { font-size: 12.5px; text-align: right; } .dayrow.sun { grid-template-columns: 110px 1fr auto; }
+.sunh { margin-top: 10px; font-weight: 600; font-size: 13px; color: var(--sub); }
+.older { margin: 6px 0 4px; } .older .check-more { color: var(--mut); font-size: 12.5px; } .older .check { margin-top: 8px; }
+@media (max-width: 600px) { .dayrow { grid-template-columns: 96px 1fr; } .dayrow .dt { grid-column: 2; text-align: left; } .days-sum { font-size: 12.5px; } }

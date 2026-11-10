@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-11-08-payroll-32";
+const BUILD = "2026-11-09-payroll-34";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -125,7 +125,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 // Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
 // which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
-const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2", "2026-10-30-closers", "2026-10-30-dupes", "2026-10-30-dupes2", "2026-10-30-dupes3", "2026-10-30-initials", "2026-10-30-initials2", "2026-10-30-redocal", "2026-10-30-privacy", "2026-10-30-privacy3", "2026-10-31-revenue", "2026-10-31-extracars", "2026-11-01-statsexport", "2026-11-02-hooklog", "2026-11-02-addrep", "2026-11-03-ghlalign", "2026-11-04-sameday", "2026-11-05-attendance", "2026-11-05-titleprice", "2026-11-08-recover"];
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2", "2026-10-30-closers", "2026-10-30-dupes", "2026-10-30-dupes2", "2026-10-30-dupes3", "2026-10-30-initials", "2026-10-30-initials2", "2026-10-30-redocal", "2026-10-30-privacy", "2026-10-30-privacy3", "2026-10-31-revenue", "2026-10-31-extracars", "2026-11-01-statsexport", "2026-11-02-hooklog", "2026-11-02-addrep", "2026-11-03-ghlalign", "2026-11-04-sameday", "2026-11-05-attendance", "2026-11-05-titleprice", "2026-11-08-recover", "2026-11-08-sundaywarn", "2026-11-09-paydetail"];
 const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
 function buildState(build) {
   if (!build) return "unknown";
@@ -176,7 +176,12 @@ async function peoplePay(periodId) {
   const roleOrder = { manager: 0, tech: 1 };
   const byLocation = locs.map((l) => { const list = l.data ? (l.data.people || []).slice().sort((a, b) => (roleOrder[a.role] ?? 2) - (roleOrder[b.role] ?? 2) || a.name.localeCompare(b.name)).map((p) => ({ ...p, name: nice(p.name) })) : [];
     return { ...statusOf(l), people: list, totals: { base: sum(list, "base"), upsellCommission: sum(list, "upsellCommission"), walkInCommission: sum(list, "walkInCommission"), tips: sum(list, "tips"), adjustments: sum(list, "adjustments"), total: sum(list, "total") } }; });
-  return { latestShopBuild: LATEST_SHOP, byLocation, period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0) + unmatchedTotal), bonuses: bonusRows, bonusTotal, bonusReasons: BONUS_REASONS };
+  // Notices (the "Check before you pay" list) are for the LAST pay period and the one in progress, and nothing older: a correction on an October payroll, or the checks of an old period you happen to open, are not today's problem.
+  // They are not thrown away: they are handed over separately as hiddenWarnings, so the screen can keep them one tap away and an underpayment can never be lost for good.
+  const cur = first && first.containingIndex >= 0 ? first.periods[first.containingIndex] : null, prev = first && first.containingIndex > 0 ? first.periods[first.containingIndex - 1] : null;
+  const noticesFrom = (prev || cur || {}).start || null, viewingOld = !!(noticesFrom && first && first.period && first.period.end < noticesFrom);
+  const windowed = (e) => { if (!noticesFrom) return { ...e, hiddenWarnings: [] }; const shown = [], hidden = []; (e.warnings || []).forEach((w) => ((viewingOld || (w.code === "corrections" && w.periodEnd && w.periodEnd < noticesFrom)) ? hidden : shown).push(w)); return { ...e, warnings: shown, hiddenWarnings: hidden }; };
+  return { latestShopBuild: LATEST_SHOP, noticesFrom, viewingOld, byLocation: byLocation.map(windowed), period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf).map(windowed), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0) + unmatchedTotal), bonuses: bonusRows, bonusTotal, bonusReasons: BONUS_REASONS };
 }
 app.get("/api/pay/people", requireOwner, async (req, res) => res.json(await peoplePay(String(req.query.periodId || ""))));
 
