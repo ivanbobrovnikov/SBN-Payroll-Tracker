@@ -20,7 +20,7 @@ app.use(express.static(path.join(__dirname, "public"), { setHeaders: (res, f) =>
 const PORT = process.env.PORT || 3500;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "data.json");
-const BUILD = "2026-11-09-payroll-35";
+const BUILD = "2026-11-10-payroll-37";
 
 // ---------- storage ----------
 const newId = () => crypto.randomBytes(8).toString("hex");
@@ -125,7 +125,7 @@ async function callLocation(loc, pathAndQuery) {
 }
 // Which release each shop is running. Every shop release is listed here, oldest to newest (add each new one when a new shop zip is made), so the screen can say plainly
 // which shops are behind. "old" = no Re-run payroll yet; "behind" = has it but not the newest fixes; "latest" = up to date.
-const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2", "2026-10-30-closers", "2026-10-30-dupes", "2026-10-30-dupes2", "2026-10-30-dupes3", "2026-10-30-initials", "2026-10-30-initials2", "2026-10-30-redocal", "2026-10-30-privacy", "2026-10-30-privacy3", "2026-10-31-revenue", "2026-10-31-extracars", "2026-11-01-statsexport", "2026-11-02-hooklog", "2026-11-02-addrep", "2026-11-03-ghlalign", "2026-11-04-sameday", "2026-11-05-attendance", "2026-11-05-titleprice", "2026-11-08-recover", "2026-11-08-sundaywarn", "2026-11-09-paydetail", "2026-11-09-halfday"];
+const SHOP_BUILDS = ["2026-10-26-payroll", "2026-10-26-calendars", "2026-10-26-calendars2", "2026-10-27-rerun", "2026-10-27-showroom", "2026-10-28-upsells", "2026-10-28-upsells2", "2026-10-28-payperiods", "2026-10-28-rerunaccess", "2026-10-29-cash", "2026-10-29-cash2", "2026-10-29-ghlmirror", "2026-10-29-ghlauto", "2026-10-30-redos", "2026-10-30-va", "2026-10-30-va2", "2026-10-30-closers", "2026-10-30-dupes", "2026-10-30-dupes2", "2026-10-30-dupes3", "2026-10-30-initials", "2026-10-30-initials2", "2026-10-30-redocal", "2026-10-30-privacy", "2026-10-30-privacy3", "2026-10-31-revenue", "2026-10-31-extracars", "2026-11-01-statsexport", "2026-11-02-hooklog", "2026-11-02-addrep", "2026-11-03-ghlalign", "2026-11-04-sameday", "2026-11-05-attendance", "2026-11-05-titleprice", "2026-11-08-recover", "2026-11-08-sundaywarn", "2026-11-09-paydetail", "2026-11-09-halfday", "2026-11-09-runall", "2026-11-10-breakdown"];
 const LATEST_SHOP = SHOP_BUILDS[SHOP_BUILDS.length - 1], RERUN_FROM = "2026-10-27-rerun";
 function buildState(build) {
   if (!build) return "unknown";
@@ -184,6 +184,67 @@ async function peoplePay(periodId) {
   return { latestShopBuild: LATEST_SHOP, noticesFrom, viewingOld, byLocation: byLocation.map(windowed), period: first ? first.period : null, periods: first ? first.periods : [], containingIndex: first ? first.containingIndex : -1, locations: locs.map(statusOf).map(windowed), people, grandTotal: cents(people.reduce((t, p) => t + p.combined.total, 0) + unmatchedTotal), bonuses: bonusRows, bonusTotal, bonusReasons: BONUS_REASONS };
 }
 app.get("/api/pay/people", requireOwner, async (req, res) => res.json(await peoplePay(String(req.query.periodId || ""))));
+
+// ---------- Run payroll for every shop ----------
+// Running payroll records everyone's pay for a finished period at each shop. This does it for all the shops in one go, through each shop's own "Run payroll" (the same function the shop's button uses), and only after a review:
+//  - every shop is asked what it would run (people, total, notices, waiting adjustments, and a fingerprint of all of it);
+//  - nothing runs if any shop can't be reached, is out of date, isn't past the end of the period, or is waiting on an earlier period; a shop that already ran it is simply left alone;
+//  - you must type RUN, and the run is refused if anything at any shop changed after you reviewed it;
+//  - each shop's result is reported on its own, and the attempt is written to a log here.
+// Bonuses live only in this tracker, so they are NOT part of a shop's run: the review says so.
+async function postLocation(loc, pathAndQuery, body) {
+  const r = await fetch(loc.url + pathAndQuery, { method: "POST", headers: { "X-Cross-Secret": loc.secret, "Content-Type": "application/json" }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(60000) });
+  let data = null; try { data = await r.json(); } catch (e) { /* not json */ }
+  return { status: r.status, ok: r.ok, data };
+}
+async function runReview(periodId) {
+  const db = loadDB(), locs = await askAll(db, `/api/cross-location/payroll-run-preview?periodId=${encodeURIComponent(periodId)}`);
+  const shops = locs.map((l) => {
+    const base = { locationId: l.locationId, locationName: l.locationName };
+    if (l.needsUpdate) return { ...base, status: "needs_update", reason: `${l.locationName} needs the latest shop update before it can run payroll from here.` };
+    if (!l.data) return { ...base, status: "unreachable", reason: `Couldn't reach ${l.locationName} (${l.error || "no answer"}).` };
+    const d = l.data, common = { ...base, people: d.people, total: d.total, warnings: d.warnings || [], pendingAdjustments: d.pendingAdjustments || { count: 0, amount: 0 }, carry: d.carry || { count: 0, amount: 0, from: null, items: [] }, older: d.older || 0, overpaid: d.overpaid || { count: 0, items: [] }, fingerprint: d.fingerprint, period: d.period };
+    if (d.state === "run") return { ...common, status: "already_run", reason: `Already run${d.run && d.run.closedAt ? " on " + d.run.closedAt.slice(0, 10) : ""}. Left alone.`, run: d.run };
+    if (d.state === "skipped") return { ...common, status: "skipped", reason: "This period was marked as paid another way. Left alone." };
+    if (!d.over) return { ...common, status: "not_over", reason: `${l.locationName}: this pay period isn't over yet. It ends ${d.period.end}.` };
+    if (d.blockedBy) return { ...common, status: "blocked", reason: `${l.locationName}: run ${d.blockedBy.name} first. Pay periods are run in order.` };
+    if (!d.runnable) return { ...common, status: "not_runnable", reason: `${l.locationName} can't run this period.` };
+    return { ...common, status: "ready", reason: "" };
+  });
+  const stop = shops.filter((x) => ["needs_update", "unreachable", "not_over", "blocked", "not_runnable"].includes(x.status)), ready = shops.filter((x) => x.status === "ready");
+  const bonuses = (db.bonuses || []).filter((b) => b.periodId === periodId), period = (shops.find((x) => x.period) || {}).period || null;
+  const fingerprint = require("crypto").createHash("sha1").update(JSON.stringify(shops.map((x) => [x.locationId, x.status, x.fingerprint || null]))).digest("hex");
+  return { period, shops, canRun: !stop.length && ready.length > 0, blockers: stop.map((x) => x.reason), readyCount: ready.length, bonus: { count: bonuses.length, total: cents(bonuses.reduce((t, b) => t + b.amount, 0)) }, fingerprint };
+}
+app.get("/api/pay/run-review", requireOwner, async (req, res) => { const id = String(req.query.periodId || ""); if (!id) return res.status(400).json({ error: "Pick a pay period." }); res.set("Cache-Control", "no-store"); res.json(await runReview(id)); });
+const runLocks = new Set();
+app.post("/api/pay/run", requireOwner, async (req, res) => {
+  const b = req.body || {}, periodId = String(b.periodId || "");
+  if (b.confirm !== "RUN") return res.status(400).json({ error: "Type RUN to confirm." });
+  if (!periodId) return res.status(400).json({ error: "Pick a pay period." });
+  if (runLocks.has(periodId)) return res.status(409).json({ error: "A run for this pay period is already in progress." });
+  runLocks.add(periodId);
+  try {
+    const review = await runReview(periodId);
+    if (!review.canRun) return res.status(409).json({ error: "Nothing was run. " + (review.blockers[0] || "There is nothing ready to run."), blockers: review.blockers });
+    if (!b.fingerprint || b.fingerprint !== review.fingerprint) return res.status(409).json({ changed: true, error: "Something changed since you reviewed this (a person's pay, a notice, or a shop's status). Nothing was run. Review it again." });
+    // Corrections to the last pay period are added ONLY if you approved them: b.approve is { shopId: [item ids shown in the review] }. An id that was not in the review is refused, and nothing is run.
+    const approve = b.approve && typeof b.approve === "object" ? b.approve : {};
+    for (const [shopId, ids] of Object.entries(approve)) { const sh = review.shops.find((x) => x.locationId === shopId); if (!sh || !Array.isArray(ids) || ids.some((id) => !((sh.carry && sh.carry.items) || []).some((i) => i.id === String(id)))) return res.status(409).json({ changed: true, error: "A correction you approved isn't in what was reviewed. Nothing was run. Review it again." }); }
+    const db = loadDB(), results = [];
+    for (const shop of review.shops.filter((x) => x.status === "ready")) {
+      const loc = db.locations.find((l) => l.id === shop.locationId), ids = (Array.isArray(approve[shop.locationId]) ? approve[shop.locationId] : []).map(String);
+      try {
+        const r = await postLocation(loc, "/api/cross-location/payroll-run", { periodId, fingerprint: shop.fingerprint, approvedCarry: ids });
+        if (r.ok && r.data && r.data.ok) results.push({ locationId: shop.locationId, locationName: shop.locationName, ok: true, people: r.data.people, total: r.data.total, closedAt: r.data.closedAt, ranWithWarnings: r.data.ranWithWarnings || [], carried: r.data.carried || [] });
+        else results.push({ locationId: shop.locationId, locationName: shop.locationName, ok: false, changed: !!(r.data && r.data.changed), error: (r.data && r.data.error) || `The shop answered ${r.status}.` });
+      } catch (e) { results.push({ locationId: shop.locationId, locationName: shop.locationName, ok: false, error: e.name === "TimeoutError" ? "No answer from the shop. Check it before running again: it may or may not have run." : (e.message || "Couldn't reach the shop.") }); }
+    }
+    const fresh = loadDB(); fresh.runLog = fresh.runLog || [];
+    fresh.runLog.unshift({ id: newId(), at: new Date().toISOString(), periodId, period: review.period ? review.period.name : null, approvedCorrections: Object.values(approve).reduce((t, a) => t + (Array.isArray(a) ? a.length : 0), 0), results }); fresh.runLog = fresh.runLog.slice(0, 200); saveDB(fresh);
+    res.json({ ok: results.every((r) => r.ok), results, skipped: review.shops.filter((x) => x.status !== "ready").map((x) => ({ locationName: x.locationName, status: x.status, reason: x.reason })), bonus: review.bonus });
+  } finally { runLocks.delete(periodId); }
+});
 
 const BONUS_REASONS = ["Hit a goal", "Top performer", "Holiday", "Other"];
 // Add or take away a bonus. It is the owner's own list in this tracker; nothing is sent to the shops.

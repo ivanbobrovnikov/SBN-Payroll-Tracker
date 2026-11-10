@@ -19,7 +19,7 @@ async function api(path, opts) {
   const r = await fetch(path, { method: "GET", headers: { "Content-Type": "application/json" }, ...(opts || {}) });
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 && path !== "/api/login" && path !== "/api/password") { await boot(); throw new Error("Please sign in again."); }
-  if (!r.ok) throw new Error(d.error || "Something went wrong.");
+  if (!r.ok) { const err = new Error(d.error || "Something went wrong."); err.data = d; err.status = r.status; throw err; }
   return d;
 }
 const app = document.getElementById("app");
@@ -108,7 +108,7 @@ function checksPanel(d, locs) {
           return el("div", { class: "check", "data-part": "check", "data-code": w.code }, [
             el("div", { class: "check-text", text: w.text }),
             w.code === "corrections" ? el("div", { class: "check-fix", "data-part": "check-fix" }, [
-              el("div", { text: l.url && w.periodStart ? `To fix it: tap the button. It opens ${day(w.periodStart)} \u2013 ${day(w.periodEnd)} in ${l.locationName}, where you press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` : `To fix it: open ${l.locationName}, go to Payroll, pick Pay period and go back to that period. Press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have.` }),
+              el("div", { text: l.url && w.periodStart ? `To fix it: tap the button. It opens ${day(w.periodStart)} \u2013 ${day(w.periodEnd)} in ${l.locationName}, where you press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have. Or, if this was the LAST pay period, approve it when you run the next payroll from here (Review and run).` : `To fix it: open ${l.locationName}, go to Payroll, pick Pay period and go back to that period. Press "Re-run this payroll" if its checks haven't gone out yet, or "Add the underpayments to the next check" if they have. Or, if this was the LAST pay period, approve it when you run the next payroll from here (Review and run).` }),
               l.url && w.periodStart && w.periodEnd ? el("a", { class: "btn sm pri", style: "margin-top:8px", "data-act": "open-period", href: `${l.url}/#payroll=${w.periodStart}_${w.periodEnd}`, target: "_blank", rel: "noopener noreferrer", text: `Open ${day(w.periodStart)} \u2013 ${day(w.periodEnd)} in ${l.locationName} to re-run it` }) : null]) : null,
             items.length ? el("button", { class: "check-more", "data-act": "details", "aria-expanded": String(open), onclick: () => { open ? detailOpen.delete(key) : detailOpen.add(key); draw(); }, text: open ? "Hide details" : `Show details (${items.length})` }) : null,
             items.length && open ? el("ul", { class: "check-items", "data-part": "check-items" }, items.map((i) => el("li", { text: i }))) : null]);
@@ -129,21 +129,34 @@ const DAY_LOOK = { present: ["\u2713", "Worked", "#6BF0B4"], half: ["\u00BD", "H
 const clock = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); if (!m) return ""; let h = +m[1]; const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return `${h}:${m[2]} ${ap}`; };
 const dayShort3 = (ymd) => new Date(ymd + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 function daysPanel(l, keyBase, redraw) {
-  const dt = l && l.detail; if (!dt || (!dt.days.length && !dt.sunday)) return null;                 // nothing recorded for someone paid per car: no empty drop-down
+  const dt = l && l.detail, bd = dt && dt.breakdown && dt.breakdown.lines && dt.breakdown.lines.length ? dt.breakdown : null; if (!dt || (!dt.days.length && !dt.sunday && !bd)) return null;                 // nothing to show for this person
   const c = dt.counts, key = "D:" + keyBase, open = daysOpen.has(key);
   const bits = [`${c.present} worked`]; if (c.half) bits.push(`${c.half} half day${c.half === 1 ? "" : "s"}`); bits.push(`${c.absent} missed`); if (c.unmarked) bits.push(`${c.unmarked} not marked`); if (c.upcoming) bits.push(`${c.upcoming} coming up`);
+  const summary = dt.days.length ? bits.join(" \u00B7 ") + ` (of ${dt.workDays} day${dt.workDays === 1 ? "" : "s"})` : bd.lines.filter((x) => x.key !== "proposed").map((x) => x.label).join(" \u00B7 ");
   const wrap = el("div", { class: "days noprint", "data-part": "days", "data-name": l.name }, [
     el("button", { class: "days-toggle", "data-act": "days", "aria-expanded": String(open), onclick: (ev) => { ev.stopPropagation(); open ? daysOpen.delete(key) : daysOpen.add(key); redraw(); } }, [
-      el("span", { class: "days-lbl", text: "Days worked" }), el("span", { class: "days-sum", "data-part": "days-sum", text: bits.join(" \u00B7 ") + ` (of ${dt.workDays} day${dt.workDays === 1 ? "" : "s"})` }), el("span", { class: "days-caret", "aria-hidden": "true", text: open ? "\u25B4" : "\u25BE" })])]);
+      el("span", { class: "days-lbl", text: "Pay breakdown" }), el("span", { class: "days-sum", "data-part": "days-sum", text: summary }), el("span", { class: "days-caret", "aria-hidden": "true", text: open ? "\u25B4" : "\u25BE" })])]);
   if (!open) return wrap;
   const body = el("div", { class: "days-body", "data-part": "days-body" });
-  if (!dt.usesAttendance) body.appendChild(el("div", { class: "mut", style: "padding:4px 0 8px;font-size:13px", text: "Paid per car, so attendance doesn't change this person's pay." }));
+  if (bd) {                                                                                         // what the number is made of, line by line, adding up to the total
+    const bl = el("div", { class: "bd", "data-part": "breakdown" }), sum = Math.round(bd.lines.reduce((t, x) => t + (x.amount || 0), 0) * 100) / 100;
+    bd.lines.forEach((ln) => { const prop = ln.key === "proposed";
+      bl.appendChild(el("div", { class: "bdline" + (prop ? " prop" : ""), "data-part": "bd-line", "data-key": ln.key }, [
+        el("div", { class: "bdtop" }, [el("span", { class: "bdlbl", text: ln.label }), el("b", { class: "bdamt", style: prop ? "color:var(--warn)" : "", text: prop ? `+${money(ln.proposed)} waiting for your approval` : money(ln.amount) })]),
+        ln.how ? el("div", { class: "mut bdhow", text: ln.how }) : null,
+        ...(ln.items || []).map((it) => el("div", { class: "bditem", "data-part": "bd-item" }, [el("span", { text: it.text }), el("span", { class: "mut", text: (it.amount < 0 ? "-" : "") + money(Math.abs(it.amount)) })]))]));
+    });
+    bl.appendChild(el("div", { class: "bdline bdtotal", "data-part": "bd-total" }, [el("div", { class: "bdtop" }, [el("span", { class: "bdlbl", text: "Total" }), el("b", { class: "bdamt", text: money(sum) })])]));
+    if (bd.changedSinceRun) bl.appendChild(el("div", { style: "font-size:12px;color:var(--warn);margin-top:6px", text: `These are today's numbers. The payroll was run at ${money(bd.changedSinceRun.recorded)}; it would be ${money(bd.changedSinceRun.now)} now.` }));
+    body.appendChild(bl);
+  }
+  if (!dt.usesAttendance && dt.days.length) body.appendChild(el("div", { class: "mut", style: "padding:4px 0 8px;font-size:13px", text: "Paid per car, so attendance doesn't change this person's pay." }));
   dt.days.forEach((x) => { const [ico, word, col] = DAY_LOOK[x.status] || DAY_LOOK.unmarked, t = x.start || x.end ? `${clock(x.start) || "?"} \u2013 ${clock(x.end) || "?"}` : "";
     body.appendChild(el("div", { class: "dayrow", "data-part": "dayrow", "data-status": x.status }, [el("span", { class: "dd", text: dayShort3(x.date) }), el("span", { class: "ds", style: `color:${col}` }, [el("b", { text: ico + " " }), word + (x.status === "unmarked" && dt.usesAttendance ? " (pays $0)" : x.status === "half" && dt.usesAttendance ? " (half pay)" : "")]), el("span", { class: "dt mut", text: t })])); });
-  if (dt.sunday && dt.sunday.cars.length) {
+  if (dt.sunday && !(bd && bd.lines.some((x) => x.key === "sunday")) && dt.sunday.cars.length) {
     body.appendChild(el("div", { class: "sunh", text: `Sunday cars \u00B7 ${dt.sunday.rate}% of each car's price \u00B7 ${money(dt.sunday.amount)} (in Base pay)` }));
     dt.sunday.cars.forEach((cr) => body.appendChild(el("div", { class: "dayrow sun", "data-part": "sunday-car" }, [el("span", { class: "dd", text: dayShort3(String(cr.date).slice(0, 10)) }), el("span", { class: "ds", text: String(cr.car || "").slice(0, 46) }), el("span", { class: "dt", text: `${money(cr.basePrice)} \u2192 ${money(cr.commission)}` })])));
-  } else if (dt.sunday) body.appendChild(el("div", { class: "sunh", text: `Sunday cars \u00B7 ${dt.sunday.rate}% \u00B7 none counted this period` }));
+  } else if (dt.sunday && !(bd && bd.lines.some((x) => x.key === "sunday"))) body.appendChild(el("div", { class: "sunh", text: `Sunday cars \u00B7 ${dt.sunday.rate}% \u00B7 none counted this period` }));
   wrap.appendChild(body); return wrap;
 }
 
@@ -174,6 +187,74 @@ async function renderRedosAll(main) {
       open ? el("div", { style: "padding:8px 18px 14px" }, mine.length ? mine.map((e) => el("div", { style: "padding:6px 0;border-top:1px solid var(--ln)", "data-part": "redo-event" }, [el("div", { text: `${e.car}${e.customerName ? " \u00B7 " + e.customerName : ""}` }), el("div", { class: "mut", style: "font-size:13px", text: `${e.locationName} \u00B7 came back ${e.date} \u00B7 ${e.reason}${e.notFault ? " \u00B7 not the tech's fault" : ""}${e.note ? " \u00B7 " + e.note : ""}` })])) : [el("div", { class: "mut", text: "No redos in this period." })]) : null]));
   });
   if (d.reasons.length) { const max = Math.max(1, ...d.reasons.map((r) => r.count)); body.appendChild(el("h2", { class: "num", style: "margin:8px 0 0;font-size:26px", text: "Why they happen" })); body.appendChild(el("div", { class: "card", "data-part": "redo-reasons", style: "padding:14px 16px" }, d.reasons.map((r) => el("div", { style: "padding:6px 0" }, [el("div", { class: "row", style: "justify-content:space-between" }, [el("span", { text: r.reason }), el("span", { class: "num", text: String(r.count) })]), el("div", { style: "height:4px;background:var(--ln);border-radius:2px;margin-top:4px" }, [el("div", { style: `height:100%;border-radius:2px;background:var(--acc,#5b93ff);width:${Math.max(3, (r.count / max) * 100)}%` })])])))); }
+}
+
+// ---------- Run payroll for every shop ----------
+// Appears only for a pay period that has ended and has a shop that has not run it. It first REVIEWS every shop (people, total, notices), then runs them all through each shop's own Run payroll, only after you type RUN.
+// Nothing runs if a shop can't be reached, is out of date, or is waiting on an earlier period; a shop that already ran it is left alone; and if anything changed after you looked, it refuses and you review again.
+let runOpen = null, runResult = null;                  // runOpen is the id of the pay period whose review is open, so a review can never carry over to a different period
+const RUN_CHIP = { ready: ["Ready", "g"], already_run: ["Already run", ""], skipped: ["Paid another way", ""], not_over: ["Not over yet", "a"], blocked: ["Waiting on an earlier period", "a"], unreachable: ["Can't reach", "a"], needs_update: ["Needs the latest update", "a"], not_runnable: ["Can't run this period", "a"] };
+function runPanel(d) {
+  const per = d.period, periods = d.periods || [], idx = per ? periods.findIndex((p) => p.id === per.id) : -1;
+  if (!per || !(idx >= 0 && idx < d.containingIndex)) return null;                                     // only a period that has ended
+  const mine = runResult && runResult.periodId === per.id ? runResult : null;
+  if (!d.locations.some((l) => l.ok && l.state === "open") && !mine) return null;                       // and only if some shop has not run it
+  const wrap = el("section", { class: "runbox noprint", "data-part": "run-box" });
+  let review = null, typed = "", msg = "", busy = false, notesOpen = new Set(), approved = {};            // approved: { shopId: Set of correction ids you ticked }. Nothing is approved unless you tick it, and a fresh review clears them.
+  const names = () => review.shops.filter((s) => s.status === "ready").map((s) => s.locationName);
+  const approvedFor = (s) => (s.carry && s.carry.items || []).filter((i) => (approved[s.locationId] || new Set()).has(i.id)), approvedSum = (s) => Math.round(approvedFor(s).reduce((t, i) => t + i.amount, 0) * 100) / 100, approvedCount = () => review.shops.reduce((t, s) => t + approvedFor(s).length, 0);
+  async function load() { try { review = await api("/api/pay/run-review?periodId=" + encodeURIComponent(per.id)); msg = ""; approved = {}; } catch (e) { review = null; msg = e.message; } draw(); }
+  async function go() {
+    if (busy || typed !== "RUN") return; busy = true; msg = ""; draw();
+    try { runResult = await api("/api/pay/run", { method: "POST", body: JSON.stringify({ periodId: per.id, confirm: typed, fingerprint: review.fingerprint, approve: Object.fromEntries(Object.entries(approved).map(([k, v]) => [k, [...v]])) }) }); runResult.periodId = per.id; }
+    catch (e) { busy = false; typed = ""; msg = e.message; if (e.data && e.data.changed) { await load(); msg = e.message; draw(); return; } draw(); return; }
+    busy = false; draw();
+  }
+  // What the LAST pay period missed, one tick per person. Nothing here is added unless you tick it (or press Approve all).
+  function runCarry(s) {
+    const set = approved[s.locationId] || (approved[s.locationId] = new Set()), items = s.carry.items, all = items.every((i) => set.has(i.id));
+    return el("div", { class: "runcarry", "data-part": "run-carry" }, [
+      el("div", { style: "font-weight:600;font-size:14px", text: `Missed on the last pay period (${s.carry.from})` }),
+      el("div", { class: "mut", style: "font-size:12.5px", text: `${money(s.carry.amount)} in all. Not added unless you approve it: tick the ones you want on this payroll.` }),
+      el("div", { class: "row", style: "gap:8px;margin:6px 0" }, [el("button", { class: "btn sm", "data-act": "run-approve-all", onclick: () => { all ? items.forEach((i) => set.delete(i.id)) : items.forEach((i) => set.add(i.id)); draw(); }, text: all ? "Approve none" : "Approve all" })]),
+      ...items.map((i) => el("label", { class: "runitem", "data-part": "run-item" }, [el("input", { type: "checkbox", "data-field": "run-approve", "data-id": i.id, checked: set.has(i.id) ? "" : null, onchange: (ev) => { ev.target.checked ? set.add(i.id) : set.delete(i.id); draw(); } }), el("span", { style: "flex:1", text: i.name }), el("b", { style: "color:#6BF0B4", text: "+" + money(i.amount) })]))]);
+  }
+  function draw() {
+    wrap.innerHTML = "";
+    const shown = runResult && runResult.periodId === per.id ? runResult : null;
+    if (shown) {                                                                                  // what happened, shop by shop
+      const ok = shown.ok, box = el("div", { class: "co " + (ok ? "" : "w"), "data-part": "run-result", "data-ok": String(ok), style: ok ? "border-color:var(--grn)" : "" }, [el("b", { text: ok ? `Payroll was run at ${shown.results.length} shop${shown.results.length === 1 ? "" : "s"}.` : "Not everything ran. Read each shop below." })]);
+      shown.results.forEach((r) => box.appendChild(el("div", { class: "runres", "data-part": "run-res", "data-ok": String(r.ok) }, [el("span", { style: `color:${r.ok ? "#6BF0B4" : "#FFA99D"};font-weight:600`, text: (r.ok ? "\u2713 " : "\u2717 ") + r.locationName }), el("span", { class: "mut", text: r.ok ? ` ${r.people} ${r.people === 1 ? "person" : "people"} \u00B7 ${money(r.total)}` + (r.ranWithWarnings && r.ranWithWarnings.length ? " \u00B7 run with notices" : "") : ` ${r.error}` })])));
+      shown.results.filter((r) => r.ok && (r.carried || []).length).forEach((r) => box.appendChild(el("div", { class: "runres mut", "data-part": "run-carried", style: "font-size:13px", text: `${r.locationName}: added from the last pay period: ${r.carried.map((c) => `${c.name} +${money(c.amount)}`).join(", ")}` })));
+      (shown.skipped || []).forEach((s) => box.appendChild(el("div", { class: "runres mut", "data-part": "run-skipped", text: `${s.locationName}: ${s.reason}` })));
+      if (!ok) box.appendChild(el("div", { class: "mut", style: "margin-top:8px;font-size:13px", text: "A shop that ran will not run again. Fix what the others say, then review again." }));
+      box.appendChild(el("button", { class: "btn sm pri", style: "margin-top:10px", "data-act": "run-done", onclick: () => { runResult = null; runOpen = null; boot(); }, text: "Done" }));
+      wrap.appendChild(box); return;
+    }
+    if (runOpen !== per.id) { wrap.appendChild(el("div", { class: "card runhead" }, [el("div", { style: "flex:1;min-width:0" }, [el("div", { style: "font-weight:600", text: "Ready to pay? Run payroll for every shop" }), el("div", { class: "mut", style: "font-size:13px", text: `${day(per.start)} \u2013 ${day(per.end)}. This records everyone's pay at each shop, the same as pressing Run payroll in each one. You review first.` })]), el("button", { class: "btn pri", "data-act": "run-open", onclick: () => { runOpen = per.id; typed = ""; msg = ""; wrap.innerHTML = ""; wrap.appendChild(el("div", { class: "mut", text: "Checking every shop..." })); load(); }, text: "Review and run" })])); return; }
+    const card = el("div", { class: "card runcard", "data-part": "run-review" }); wrap.appendChild(card);
+    card.appendChild(el("div", { class: "row", style: "align-items:baseline" }, [el("h2", { class: "num", style: "margin:0;font-size:26px", text: `Run payroll: ${day(per.start)} \u2013 ${day(per.end)}` }), el("div", { class: "sp" }), el("button", { class: "btn sm", "data-act": "run-cancel", onclick: () => { runOpen = null; draw(); }, text: "Cancel" })]));
+    if (!review) { card.appendChild(el("div", { class: "co e", style: "margin-top:10px", text: msg || "Couldn't check the shops." })); return; }
+    review.shops.forEach((s) => { const [chipText, chipCls] = RUN_CHIP[s.status] || [s.status, "a"], open = notesOpen.has(s.locationId), n = (s.warnings || []).length;
+      card.appendChild(el("div", { class: "runshop", "data-part": "run-shop", "data-status": s.status, "data-name": s.locationName }, [
+        el("div", { class: "row", style: "gap:10px;align-items:center" }, [el("b", { style: "font-size:17px", text: s.locationName }), el("span", { class: "chip " + chipCls, text: chipText }), el("div", { class: "sp" }), s.total !== undefined && s.status !== "unreachable" && s.status !== "needs_update" ? el("span", { class: "num chr", "data-part": "run-total", style: "font-size:24px", text: money(s.total + (s.status === "ready" ? approvedSum(s) : 0)) }) : null]),
+        s.people !== undefined && s.status !== "unreachable" && s.status !== "needs_update" ? el("div", { class: "mut", style: "font-size:13px", text: `${s.people} ${s.people === 1 ? "person" : "people"}` + (s.pendingAdjustments && s.pendingAdjustments.count ? ` \u00B7 includes ${money(s.pendingAdjustments.amount)} in waiting adjustments (${s.pendingAdjustments.count})` : "") }) : null,
+        s.reason ? el("div", { class: "mut", style: "font-size:13px", "data-part": "run-reason", text: s.reason }) : null,
+        s.status === "ready" && n ? el("button", { class: "check-more", "data-act": "run-notes", style: "margin-top:4px", onclick: () => { open ? notesOpen.delete(s.locationId) : notesOpen.add(s.locationId); draw(); }, text: open ? "Hide notices" : `${n} notice${n === 1 ? "" : "s"} to read before you run it` }) : null,
+        s.status === "ready" && n && open ? el("div", { class: "runnotes", "data-part": "run-notes" }, s.warnings.map((w) => el("div", { class: "check", "data-code": w.code }, [el("div", { class: "check-text", text: w.text }), (w.items || []).length ? el("ul", { class: "check-items" }, w.items.map((i) => el("li", { text: i }))) : null]))) : null,
+        s.status === "ready" && s.carry && s.carry.items.length ? runCarry(s) : null,
+        s.status === "ready" && s.older ? el("div", { class: "mut", "data-part": "run-older", style: "font-size:12.5px;margin-top:6px", text: `${s.older} older correction${s.older === 1 ? "" : "s"} from before the last pay period ${s.older === 1 ? "is" : "are"} not added. Open that pay period in ${s.locationName} if you want to add ${s.older === 1 ? "it" : "them"}.` }) : null,
+        s.status === "ready" && s.overpaid && s.overpaid.count ? el("div", { class: "mut", "data-part": "run-over", style: "font-size:12.5px;margin-top:6px", text: `Possibly overpaid since the last payroll, never taken back automatically: ${s.overpaid.items.slice(0, 4).map((o) => `${o.name} ${money(Math.abs(o.amount))}`).join(", ")}${s.overpaid.count > 4 ? ` and ${s.overpaid.count - 4} more` : ""}.` }) : null]));
+    });
+    card.appendChild(el("div", { class: "mut", "data-part": "run-bonus", style: "font-size:13px;margin:10px 0 2px", text: review.bonus.count ? `Bonuses (${money(review.bonus.total)}, ${review.bonus.count}) are added only here. They are not part of what the shops run.` : "Bonuses are added only here. They are not part of what the shops run." }));
+    if (msg) card.appendChild(el("div", { class: "co w", "data-part": "run-msg", style: "margin-top:10px", text: msg }));
+    if (!review.canRun) { card.append(el("div", { class: "co w", "data-part": "run-blocked", style: "margin-top:10px" }, [el("b", { text: review.readyCount ? "It can't be run yet" : "There is nothing to run" }), ...(review.blockers.length ? [el("ul", {}, review.blockers.map((b) => el("li", { text: b })))] : [el("div", { class: "sub", text: "Every shop has already run this period, or paid it another way." })]), review.blockers.length ? el("div", { class: "sub", text: "Nothing runs until every shop can. Fix that, then review again." }) : null]), el("button", { class: "btn sm", style: "margin-top:8px", "data-act": "run-recheck", onclick: () => { wrap.innerHTML = ""; load(); }, text: "Review again" })); return; }
+    const input = el("input", { class: "in", "data-field": "run-confirm", placeholder: "RUN", "aria-label": "Type RUN to confirm", autocomplete: "off", autocapitalize: "characters", value: typed, style: "max-width:160px;text-transform:uppercase" }), btn = el("button", { class: "btn pri", "data-act": "run-go", style: "min-height:46px", text: busy ? "Running..." : `Run payroll at ${names().length} shop${names().length === 1 ? "" : "s"}${approvedCount() ? ` with ${approvedCount()} correction${approvedCount() === 1 ? "" : "s"} added` : ""}`, onclick: go });
+    const sync = () => { if (busy || typed !== "RUN") btn.setAttribute("disabled", "true"); else btn.removeAttribute("disabled"); }; input.addEventListener("input", () => { typed = input.value; sync(); }); if (busy) input.setAttribute("disabled", "true"); sync();
+    card.appendChild(el("div", { class: "runconfirm" }, [el("div", { class: "mut", style: "font-size:13px;margin-bottom:6px", text: `This records everyone's pay now at ${names().join(", ")}. Anything that changes afterwards shows as "changed since run".` }), el("div", { class: "row", style: "gap:10px;align-items:center;flex-wrap:wrap" }, [el("label", { style: "font-weight:600", text: "Type RUN to confirm" }), input, btn])]));
+  }
+  if (runOpen === per.id && !mine) { wrap.appendChild(el("div", { class: "mut", text: "Checking every shop..." })); load(); } else draw();      // a re-draw (another view, a reload) while a review is open re-checks it
+  return wrap;
 }
 
 async function renderPayroll(main) {
@@ -216,6 +297,8 @@ async function renderPayroll(main) {
   d.locations.filter((l) => l.needsUpdate || !l.ok).forEach((l) => body.appendChild(el("div", { class: "co w", "data-part": "problem", text: l.needsUpdate ? `${l.locationName} needs the latest tracker update before its pay can be shown here. The totals below do not include it.` : `Couldn't reach ${l.locationName} (${l.error || "no answer"}). The totals below do not include it.` })));
   const checks = kind === "people" ? renderChecks(d) : null;
   if (checks) body.appendChild(checks);
+  const runp = kind === "people" ? runPanel(d) : null;
+  if (runp) body.appendChild(runp);
   const list = kind === "people" ? d.people : d.reps;
   const search = el("input", { class: "in", placeholder: "Search a name", "aria-label": "Search a name", value: query, style: "max-width:280px", "data-field": "search" });
   search.addEventListener("input", () => { query = search.value; drawList(); });

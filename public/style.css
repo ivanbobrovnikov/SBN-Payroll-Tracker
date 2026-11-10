@@ -102,3 +102,19 @@ h1.t1 { margin: 0; font-size: 38px; }
 .sunh { margin-top: 10px; font-weight: 600; font-size: 13px; color: var(--sub); }
 .older { margin: 6px 0 4px; } .older .check-more { color: var(--mut); font-size: 12.5px; } .older .check { margin-top: 8px; }
 @media (max-width: 600px) { .dayrow { grid-template-columns: 96px 1fr; } .dayrow .dt { grid-column: 2; text-align: left; } .days-sum { font-size: 12.5px; } }
+
+/* ---- Run payroll for every shop ---- */
+.runbox { margin: 2px 0; } .runhead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 18px; }
+.runcard { padding: 16px 18px; } .runshop { padding: 12px 0; border-top: 1px solid var(--ln2); } .runshop:first-of-type { margin-top: 10px; }
+.runnotes { margin: 6px 0 2px; } .runnotes .check { margin-top: 8px; }
+.runconfirm { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--ln2); }
+.runres { padding: 5px 0; font-size: 14.5px; } button[disabled] { opacity: .45; cursor: not-allowed; }
+@media (max-width: 600px) { .runhead .btn { width: 100%; } }
+
+/* ---- Pay breakdown (what a person's number is made of) and approving corrections ---- */
+.bd { padding: 6px 0 10px; } .bdline { padding: 7px 0; border-top: 1px solid var(--ln2); } .bdline:first-child { border-top: 0; }
+.bdtop { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; } .bdlbl { font-weight: 600; } .bdamt { font-size: 15px; white-space: nowrap; }
+.bdhow { font-size: 12.5px; line-height: 1.4; margin-top: 2px; } .bditem { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 2px 0 2px 12px; color: var(--sub); }
+.bdline.prop { border-left: 3px solid var(--warn); padding-left: 10px; } .bdtotal { border-top: 2px solid var(--ln2); margin-top: 4px; } .bdtotal .bdamt { font-size: 17px; }
+.runcarry { margin: 10px 0 2px; padding: 10px 12px; border: 1px solid rgba(255,184,77,.5); border-radius: 12px; background: rgba(255,184,77,.06); }
+.runitem { display: flex; align-items: center; gap: 12px; padding: 8px 0; min-height: 44px; border-top: 1px solid var(--ln2); cursor: pointer; } .runitem input { width: 22px; height: 22px; accent-color: #5B93FF; }
